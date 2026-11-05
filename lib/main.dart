@@ -119,6 +119,8 @@ class _AuthGateState extends State<AuthGate> {
     } on ApiException catch (exception) {
       startupError =
           'Could not revoke the server session: ${exception.message}';
+    } catch (exception) {
+      startupError = 'Could not revoke the server session: $exception';
     } finally {
       await vault.clearSession();
     }
@@ -237,10 +239,15 @@ class _AuthPageState extends State<AuthPage> {
       }
       await widget.onAuthenticated(result, key);
     } on ApiException catch (exception) {
+      if (creatingAccount &&
+          (exception.statusCode == 400 || exception.statusCode == 409)) {
+        await widget.vault.deleteIdentity(username);
+      }
       if (mounted) setState(() => error = exception.message);
     } catch (exception) {
-      if (mounted)
+      if (mounted) {
         setState(() => error = 'Could not complete account action: $exception');
+      }
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -651,17 +658,21 @@ class _MessagesPageState extends State<MessagesPage> {
         token: widget.session.token,
         username: peer,
       );
+      final canonicalPeer = publicIdentity.username;
       final fingerprint = await EndToEndCrypto.fingerprintForPublicKeys(
         encryptionPublicKey: publicIdentity.encryptionPublicKey,
         signingPublicKey: publicIdentity.signingPublicKey,
       );
-      final savedTrust = await widget.vault.loadTrustedFingerprint(peer);
+      final savedTrust =
+          await widget.vault.loadTrustedFingerprint(canonicalPeer);
       await widget.api.createConversation(
         token: widget.session.token,
-        username: peer,
+        username: canonicalPeer,
       );
       if (!mounted) return;
       setState(() {
+        activeRecipient = canonicalPeer;
+        recipientController.text = canonicalPeer;
         activeIdentity = publicIdentity;
         activeFingerprint = fingerprint;
         trustedFingerprint = savedTrust;
@@ -675,8 +686,9 @@ class _MessagesPageState extends State<MessagesPage> {
     } on ApiException catch (exception) {
       if (mounted) setState(() => error = exception.message);
     } catch (exception) {
-      if (mounted)
+      if (mounted) {
         setState(() => error = 'Could not open conversation: $exception');
+      }
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -753,8 +765,9 @@ class _MessagesPageState extends State<MessagesPage> {
     } on ApiException catch (exception) {
       if (mounted) setState(() => error = exception.message);
     } catch (exception) {
-      if (mounted)
+      if (mounted) {
         setState(() => error = 'Could not load messages: $exception');
+      }
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -787,8 +800,9 @@ class _MessagesPageState extends State<MessagesPage> {
     } on ApiException catch (exception) {
       if (mounted) setState(() => error = exception.message);
     } catch (exception) {
-      if (mounted)
+      if (mounted) {
         setState(() => error = 'Could not send encrypted message: $exception');
+      }
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -804,8 +818,8 @@ class _MessagesPageState extends State<MessagesPage> {
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(14),
-                child: Row(
-                  children: const [
+                child: const Row(
+                  children: [
                     Icon(Icons.verified_user_outlined, color: mint),
                     SizedBox(width: 10),
                     Expanded(

@@ -8,9 +8,10 @@ const apiBaseUrl = String.fromEnvironment(
 );
 
 class ApiException implements Exception {
-  const ApiException(this.message);
+  const ApiException(this.message, {this.statusCode});
 
   final String message;
+  final int? statusCode;
 
   @override
   String toString() => message;
@@ -231,7 +232,8 @@ class CryptoShieldApi {
       final detail = json is Map<String, dynamic> ? json['detail'] : null;
       throw ApiException(detail is String
           ? detail
-          : 'Request failed (${response.statusCode}).');
+          : 'Request failed (${response.statusCode}).',
+          statusCode: response.statusCode);
     }
     return json;
   }

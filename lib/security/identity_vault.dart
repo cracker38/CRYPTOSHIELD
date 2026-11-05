@@ -61,6 +61,9 @@ class IdentityVault {
         value: jsonEncode(identity.toJson()),
       );
 
+  Future<void> deleteIdentity(String username) =>
+      _storage.delete(key: _identityKey(username));
+
   Future<DeviceIdentity?> loadIdentity(String username) async {
     final value = await _storage.read(key: _identityKey(username));
     if (value == null) return null;

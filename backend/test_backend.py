@@ -91,10 +91,16 @@ def test_registration_login_and_ciphertext_relay(client):
     try:
         stored_message = conn.execute("SELECT content FROM messages").fetchone()[0]
         stored_key = conn.execute("SELECT encryption_key FROM conversations").fetchone()[0]
+        stored_token = conn.execute("SELECT token FROM sessions WHERE user_id = 1").fetchone()[0]
         assert stored_message == ciphertext
         assert stored_key == ""
+        assert stored_token != alice_token
     finally:
         conn.close()
+
+    logged_out = client.post("/v1/logout", headers=alice_headers)
+    assert logged_out.status_code == 200
+    assert client.get("/v1/me", headers=alice_headers).status_code == 401
 
 
 def test_authentication_and_key_validation(client):

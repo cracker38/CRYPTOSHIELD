@@ -174,6 +174,7 @@ def get_user_by_id(user_id: int) -> sqlite3.Row | None:
 
 def create_session(user_id: int) -> str:
     token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("ascii")).hexdigest()
     now = datetime.now(timezone.utc)
     expires_at = (now + SESSION_TTL).isoformat()
     conn = get_db_connection()
@@ -181,7 +182,7 @@ def create_session(user_id: int) -> str:
         conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         conn.execute(
             "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
-            (token, user_id, now.isoformat(), expires_at),
+            (token_hash, user_id, now.isoformat(), expires_at),
         )
         conn.commit()
     finally:
@@ -195,6 +196,7 @@ def get_current_user(request: Request) -> sqlite3.Row:
         raise HTTPException(status_code=401, detail="Missing or invalid bearer token.")
 
     token = authorization.removeprefix("Bearer ").strip()
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     conn = get_db_connection()
     try:
         session = conn.execute(
@@ -204,7 +206,7 @@ def get_current_user(request: Request) -> sqlite3.Row:
             FROM sessions s JOIN users u ON u.id = s.user_id
             WHERE s.token = ?
             """,
-            (token,),
+            (token_hash,),
         ).fetchone()
     finally:
         conn.close()
