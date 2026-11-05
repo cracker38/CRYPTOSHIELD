@@ -1,89 +1,129 @@
+import base64
 import sqlite3
 
+import pytest
 from fastapi.testclient import TestClient
 
-from backend.main import app, DATABASE_PATH
-
-client = TestClient(app)
+from backend import main
 
 
-def reset_db():
-    conn = sqlite3.connect(DATABASE_PATH)
-    try:
-        conn.execute("DELETE FROM messages")
-        conn.execute("DELETE FROM conversations")
-        conn.execute("DELETE FROM users")
-        conn.commit()
-    finally:
-        conn.close()
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    database_path = tmp_path / "cryptoshield-test.db"
+    monkeypatch.setattr(main, "DATABASE_PATH", str(database_path))
+    with TestClient(main.app) as test_client:
+        yield test_client
 
 
-def test_registration_login_and_encrypted_one_to_one_chat():
-    reset_db()
+def public_key(seed: int) -> str:
+    return base64.urlsafe_b64encode(bytes([seed]) * 32).decode().rstrip("=")
 
-    reg_alice = client.post(
+
+def register(client: TestClient, username: str, offset: int) -> None:
+    response = client.post(
         "/v1/register",
-        json={"username": "alice", "password": "StrongPass123!"},
+        json={
+            "username": username,
+            "password": "StrongPass123!",
+            "encryption_public_key": public_key(offset),
+            "signing_public_key": public_key(offset + 1),
+        },
     )
-    assert reg_alice.status_code == 200, reg_alice.text
-    reg_bob = client.post(
-        "/v1/register",
-        json={"username": "bob", "password": "StrongPass456!"},
-    )
-    assert reg_bob.status_code == 200, reg_bob.text
+    assert response.status_code == 200, response.text
 
-    login_alice = client.post(
+
+def login(client: TestClient, username: str) -> str:
+    response = client.post(
         "/v1/login",
-        json={"username": "alice", "password": "StrongPass123!"},
+        json={"username": username, "password": "StrongPass123!"},
     )
-    assert login_alice.status_code == 200, login_alice.text
-    login_bob = client.post(
-        "/v1/login",
-        json={"username": "bob", "password": "StrongPass456!"},
-    )
-    assert login_bob.status_code == 200, login_bob.text
+    assert response.status_code == 200, response.text
+    return response.json()["token"]
 
-    token_alice = login_alice.json()["token"]
-    token_bob = login_bob.json()["token"]
 
-    conv_resp = client.post(
+def test_registration_login_and_ciphertext_relay(client):
+    register(client, "alice", 1)
+    register(client, "bob", 3)
+    alice_token = login(client, "alice")
+    bob_token = login(client, "bob")
+    alice_headers = {"Authorization": f"Bearer {alice_token}"}
+    bob_headers = {"Authorization": f"Bearer {bob_token}"}
+
+    profile = client.get("/v1/me", headers=alice_headers)
+    assert profile.status_code == 200
+    assert profile.json()["encryption_public_key"] == public_key(1)
+    assert "encryption_private_key" not in profile.json()
+
+    bob_identity = client.get("/v1/users/bob/public-key", headers=alice_headers)
+    assert bob_identity.status_code == 200
+    assert bob_identity.json()["encryption_public_key"] == public_key(3)
+
+    conversation = client.post(
         "/v1/conversations",
         json={"recipient_username": "bob"},
-        headers={"Authorization": f"Bearer {token_alice}"},
+        headers=alice_headers,
     )
-    assert conv_resp.status_code == 200, conv_resp.text
-    conversation_id = conv_resp.json()["conversation_id"]
+    assert conversation.status_code == 200, conversation.text
 
-    send_resp = client.post(
+    ciphertext = '{"v":1,"ciphertext":"opaque-ciphertext"}'
+    sent = client.post(
         "/v1/messages",
-        json={"recipient_username": "bob", "content": "hello secret"},
-        headers={"Authorization": f"Bearer {token_alice}"},
+        json={"recipient_username": "bob", "ciphertext": ciphertext},
+        headers=alice_headers,
     )
-    assert send_resp.status_code == 200, send_resp.text
+    assert sent.status_code == 200, sent.text
+    assert "content" not in sent.json()
 
-    fetch_resp = client.get(
+    fetched = client.get(
         "/v1/messages",
-        params={"with": "bob"},
-        headers={"Authorization": f"Bearer {token_alice}"},
+        params={"with": "alice"},
+        headers=bob_headers,
     )
-    assert fetch_resp.status_code == 200, fetch_resp.text
-    payload = fetch_resp.json()
-    assert payload[0]["content"] == "hello secret"
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.json()[0]["ciphertext"] == ciphertext
+    assert "content" not in fetched.json()[0]
 
-    conn = sqlite3.connect(DATABASE_PATH)
+    listed = client.get("/v1/conversations", headers=bob_headers)
+    assert listed.status_code == 200
+    assert listed.json()[0]["other_username"] == "alice"
+
+    conn = sqlite3.connect(main.DATABASE_PATH)
     try:
-        row = conn.execute(
-            "SELECT content FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
-            (conversation_id,),
-        ).fetchone()
-        assert row is not None
-        assert row[0] != "hello secret"
-        assert "hello secret" not in row[0]
+        stored_message = conn.execute("SELECT content FROM messages").fetchone()[0]
+        stored_key = conn.execute("SELECT encryption_key FROM conversations").fetchone()[0]
+        assert stored_message == ciphertext
+        assert stored_key == ""
     finally:
         conn.close()
 
-    unauthorized = client.get(
-        "/v1/messages",
-        params={"with": "bob"},
+
+def test_authentication_and_key_validation(client):
+    invalid_key = client.post(
+        "/v1/register",
+        json={
+            "username": "alice",
+            "password": "StrongPass123!",
+            "encryption_public_key": "!" * 43,
+            "signing_public_key": public_key(1),
+        },
     )
-    assert unauthorized.status_code == 401
+    assert invalid_key.status_code == 400
+
+    register(client, "alice", 1)
+    assert client.get("/v1/me").status_code == 401
+    wrong_password = client.post(
+        "/v1/login",
+        json={"username": "alice", "password": "WrongPassword123"},
+    )
+    assert wrong_password.status_code == 401
+
+
+def test_users_cannot_open_self_conversation(client):
+    register(client, "alice", 1)
+    token = login(client, "alice")
+    response = client.post(
+        "/v1/conversations",
+        json={"recipient_username": "alice"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 400
