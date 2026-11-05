@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
@@ -234,7 +233,9 @@ class _AuthPageState extends State<AuthPage> {
       if (user == null) {
         throw StateError('Firebase Authentication returned no user.');
       }
-      if (creatingAccount) pendingAccount = user;
+      if (creatingAccount) {
+        pendingAccount = user;
+      }
 
       FirebaseUserProfile profile;
       DeviceIdentity key;

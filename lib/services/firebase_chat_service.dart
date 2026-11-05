@@ -113,7 +113,12 @@ class FirebaseChatService {
         'createdAt': FieldValue.serverTimestamp(),
       });
     });
-    return getProfileByUid(uid);
+    return FirebaseUserProfile(
+      uid: uid,
+      username: username.trim(),
+      encryptionPublicKey: encryptionPublicKey,
+      signingPublicKey: signingPublicKey,
+    );
   }
 
   Future<FirebaseUserProfile> getProfileByUid(String uid) async {
