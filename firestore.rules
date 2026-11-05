@@ -1,0 +1,106 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isConversationParticipant(conversationId) {
+      return signedIn()
+        && request.auth.uid in get(
+          /databases/$(database)/documents/conversations/$(conversationId)
+        ).data.participants;
+    }
+
+    match /usernames/{usernameKey} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['uid'])
+        && request.resource.data.uid == request.auth.uid
+        && !exists(/databases/$(database)/documents/usernames/$(usernameKey))
+        && getAfter(
+          /databases/$(database)/documents/users/$(request.auth.uid)
+        ).data.usernameKey == usernameKey;
+      allow update, delete: if false;
+    }
+
+    match /users/{uid} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly([
+          'username',
+          'usernameKey',
+          'encryptionPublicKey',
+          'signingPublicKey',
+          'createdAt'
+        ])
+        && request.resource.data.username is string
+        && request.resource.data.username.matches('^[a-zA-Z0-9_]{3,24}$')
+        && request.resource.data.usernameKey == request.resource.data.username.lower()
+        && request.resource.data.encryptionPublicKey is string
+        && request.resource.data.signingPublicKey is string
+        && request.resource.data.createdAt == request.time
+        && !exists(/databases/$(database)/documents/users/$(uid))
+        && !exists(/databases/$(database)/documents/usernames/$(request.resource.data.usernameKey))
+        && getAfter(
+          /databases/$(database)/documents/usernames/$(request.resource.data.usernameKey)
+        ).data.uid == uid;
+      allow update, delete: if false;
+    }
+
+    match /conversations/{conversationId} {
+      allow get, list: if signedIn()
+        && request.auth.uid in resource.data.participants;
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly([
+          'participants',
+          'createdAt',
+          'updatedAt'
+        ])
+        && request.resource.data.participants is list
+        && request.resource.data.participants.size() == 2
+        && request.auth.uid in request.resource.data.participants
+        && request.resource.data.participants[0] != request.resource.data.participants[1]
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time
+        && exists(/databases/$(database)/documents/users/$(request.resource.data.participants[0]))
+        && exists(/databases/$(database)/documents/users/$(request.resource.data.participants[1]));
+      allow update: if signedIn()
+        && request.auth.uid in resource.data.participants
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['updatedAt'])
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow get, list: if isConversationParticipant(conversationId);
+        allow create: if isConversationParticipant(conversationId)
+          && request.resource.data.keys().hasOnly([
+            'senderUid',
+            'sender',
+            'recipientUid',
+            'recipient',
+            'ciphertext',
+            'createdAt'
+          ])
+          && request.resource.data.senderUid == request.auth.uid
+          && request.resource.data.sender == get(
+            /databases/$(database)/documents/users/$(request.auth.uid)
+          ).data.username
+          && request.resource.data.recipientUid in get(
+            /databases/$(database)/documents/conversations/$(conversationId)
+          ).data.participants
+          && request.resource.data.recipientUid != request.auth.uid
+          && request.resource.data.recipient == get(
+            /databases/$(database)/documents/users/$(request.resource.data.recipientUid)
+          ).data.username
+          && request.resource.data.ciphertext is string
+          && request.resource.data.ciphertext.size() <= 30000
+          && request.resource.data.createdAt == request.time;
+        allow update, delete: if false;
+      }
+    }
+  }
+}

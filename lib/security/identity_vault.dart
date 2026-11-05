@@ -70,23 +70,6 @@ class IdentityVault {
     return DeviceIdentity.fromJson(jsonDecode(value) as Map<String, dynamic>);
   }
 
-  Future<void> saveSession(String token, String username) async {
-    await _storage.write(key: 'session:token', value: token);
-    await _storage.write(key: 'session:username', value: username);
-  }
-
-  Future<(String, String)?> loadSession() async {
-    final token = await _storage.read(key: 'session:token');
-    final username = await _storage.read(key: 'session:username');
-    if (token == null || username == null) return null;
-    return (token, username);
-  }
-
-  Future<void> clearSession() async {
-    await _storage.delete(key: 'session:token');
-    await _storage.delete(key: 'session:username');
-  }
-
   Future<String?> loadTrustedFingerprint(String username) =>
       _storage.read(key: 'trusted:$username');
 

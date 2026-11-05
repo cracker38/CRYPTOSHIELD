@@ -1,10 +1,14 @@
 import 'dart:convert';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'security/identity_vault.dart';
-import 'services/crypto_shield_api.dart';
+import 'services/firebase_chat_service.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
   runApp(const CryptoShieldApp());
 }
 
@@ -55,9 +59,10 @@ class AuthGate extends StatefulWidget {
 }
 
 class _AuthGateState extends State<AuthGate> {
-  final api = CryptoShieldApi();
+  final auth = FirebaseAuth.instance;
+  final firebase = FirebaseChatService();
   final vault = IdentityVault();
-  AuthSession? session;
+  FirebaseUserProfile? profile;
   DeviceIdentity? identity;
   String? startupError;
   bool loading = true;
@@ -70,43 +75,43 @@ class _AuthGateState extends State<AuthGate> {
 
   Future<void> restoreSession() async {
     try {
-      final saved = await vault.loadSession();
-      if (saved != null) {
-        final profile = await api.getMe(saved.$1);
-        final localIdentity = await vault.loadIdentity(saved.$2);
-        if (localIdentity == null ||
-            localIdentity.encryptionPublicKey !=
-                profile['encryption_public_key'] ||
-            localIdentity.signingPublicKey != profile['signing_public_key']) {
-          await vault.clearSession();
-          startupError =
-              'This device does not hold the matching private keys. Log in on the device where this account was created.';
-        } else {
-          session = AuthSession(
-            token: saved.$1,
-            user: ApiUser(
-              id: profile['id'] as int,
-              username: profile['username'] as String,
-            ),
-          );
-          identity = localIdentity;
-        }
+      final user = auth.currentUser;
+      if (user == null) {
+        loading = false;
+        return;
       }
-    } on ApiException catch (error) {
-      await vault.clearSession();
-      startupError = error.message;
+      final remoteProfile = await firebase.getProfileByUid(user.uid);
+      final localIdentity = await vault.loadIdentity(remoteProfile.username);
+      if (localIdentity == null ||
+          localIdentity.encryptionPublicKey !=
+              remoteProfile.encryptionPublicKey ||
+          localIdentity.signingPublicKey != remoteProfile.signingPublicKey) {
+        await auth.signOut();
+        startupError =
+            'This device does not hold the matching private keys. Sign in on the device where this account was created.';
+      } else {
+        profile = remoteProfile;
+        identity = localIdentity;
+      }
+    } on FirebaseException catch (error) {
+      await auth.signOut();
+      startupError =
+          'Could not restore the Firebase account: ${error.message ?? error.code}';
     } catch (error) {
-      startupError = 'Could not restore the secure session: $error';
+      await auth.signOut();
+      startupError = 'Could not restore the secure account: $error';
     } finally {
       if (mounted) setState(() => loading = false);
     }
   }
 
-  Future<void> onAuthenticated(AuthSession value, DeviceIdentity key) async {
-    await vault.saveSession(value.token, value.user.username);
+  Future<void> onAuthenticated(
+    FirebaseUserProfile value,
+    DeviceIdentity key,
+  ) async {
     if (!mounted) return;
     setState(() {
-      session = value;
+      profile = value;
       identity = key;
       startupError = null;
     });
@@ -114,19 +119,16 @@ class _AuthGateState extends State<AuthGate> {
 
   Future<void> logout() async {
     try {
-      final current = session;
-      if (current != null) await api.logout(current.token);
-    } on ApiException catch (exception) {
-      startupError =
-          'Could not revoke the server session: ${exception.message}';
+      await auth.signOut();
     } catch (exception) {
-      startupError = 'Could not revoke the server session: $exception';
-    } finally {
-      await vault.clearSession();
+      if (mounted) {
+        setState(() => startupError = 'Could not sign out: $exception');
+      }
+      return;
     }
     if (!mounted) return;
     setState(() {
-      session = null;
+      profile = null;
       identity = null;
     });
   }
@@ -136,19 +138,19 @@ class _AuthGateState extends State<AuthGate> {
     if (loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
-    final activeSession = session;
+    final activeProfile = profile;
     final activeIdentity = identity;
-    if (activeSession != null && activeIdentity != null) {
+    if (activeProfile != null && activeIdentity != null) {
       return MainShell(
-        api: api,
+        firebase: firebase,
         vault: vault,
-        session: activeSession,
+        profile: activeProfile,
         identity: activeIdentity,
         onLogout: logout,
       );
     }
     return AuthPage(
-      api: api,
+      firebase: firebase,
       vault: vault,
       initialError: startupError,
       onAuthenticated: onAuthenticated,
@@ -159,22 +161,24 @@ class _AuthGateState extends State<AuthGate> {
 class AuthPage extends StatefulWidget {
   const AuthPage({
     super.key,
-    required this.api,
+    required this.firebase,
     required this.vault,
     required this.onAuthenticated,
     this.initialError,
   });
 
-  final CryptoShieldApi api;
+  final FirebaseChatService firebase;
   final IdentityVault vault;
   final String? initialError;
-  final Future<void> Function(AuthSession, DeviceIdentity) onAuthenticated;
+  final Future<void> Function(FirebaseUserProfile, DeviceIdentity)
+      onAuthenticated;
 
   @override
   State<AuthPage> createState() => _AuthPageState();
 }
 
 class _AuthPageState extends State<AuthPage> {
+  final emailController = TextEditingController();
   final usernameController = TextEditingController();
   final passwordController = TextEditingController();
   bool creatingAccount = false;
@@ -189,62 +193,113 @@ class _AuthPageState extends State<AuthPage> {
 
   @override
   void dispose() {
+    emailController.dispose();
     usernameController.dispose();
     passwordController.dispose();
     super.dispose();
   }
 
   Future<void> submit() async {
+    final email = emailController.text.trim();
     final username = usernameController.text.trim();
     final password = passwordController.text;
-    if (username.length < 3 || password.length < 12) {
+    if (email.isEmpty || password.length < 12) {
+      setState(() => error = 'Enter a valid email and a password of at least 12 characters.');
+      return;
+    }
+    if (creatingAccount &&
+        !RegExp(r'^[a-zA-Z0-9_]{3,24}$').hasMatch(username)) {
       setState(() => error =
-          'Use a username of at least 3 characters and a password of at least 12 characters.');
+          'Use 3–24 letters, numbers, or underscores for your username.');
       return;
     }
     setState(() {
       busy = true;
       error = null;
     });
+    User? pendingAccount;
+    var identitySaved = false;
     try {
+      final credential = creatingAccount
+          ? await FirebaseAuth.instance.createUserWithEmailAndPassword(
+              email: email,
+              password: password,
+            )
+          : await FirebaseAuth.instance.signInWithEmailAndPassword(
+              email: email,
+              password: password,
+            );
+      final user = credential.user;
+      if (user == null) {
+        throw StateError('Firebase Authentication returned no user.');
+      }
+      if (creatingAccount) pendingAccount = user;
+
+      FirebaseUserProfile profile;
       DeviceIdentity key;
-      AuthSession result;
       if (creatingAccount) {
         if (await widget.vault.loadIdentity(username) != null) {
-          throw const ApiException(
-            'This device already has keys for that username. Log in instead.',
+          throw StateError(
+            'This device already has keys for that username. Sign in instead.',
           );
         }
         key = await DeviceIdentity.generate();
         await widget.vault.saveIdentity(username, key);
-        result = await widget.api.register(
+        identitySaved = true;
+        profile = await widget.firebase.createProfile(
+          uid: user.uid,
           username: username,
-          password: password,
           encryptionPublicKey: key.encryptionPublicKey,
           signingPublicKey: key.signingPublicKey,
         );
+        pendingAccount = null;
       } else {
-        result = await widget.api.login(username: username, password: password);
-        key = (await widget.vault.loadIdentity(result.user.username)) ??
-            (throw const ApiException(
+        profile = await widget.firebase.getProfileByUid(user.uid);
+        key = (await widget.vault.loadIdentity(profile.username)) ??
+            (throw StateError(
               'This account has no private key on this device. Key recovery is not available; sign in on the device used to create the account.',
             ));
-        final profile = await widget.api.getMe(result.token);
-        if (key.encryptionPublicKey != profile['encryption_public_key'] ||
-            key.signingPublicKey != profile['signing_public_key']) {
-          throw const ApiException(
+        if (key.encryptionPublicKey != profile.encryptionPublicKey ||
+            key.signingPublicKey != profile.signingPublicKey) {
+          throw StateError(
             'The local private keys do not match this account. Messaging has been stopped.',
           );
         }
       }
-      await widget.onAuthenticated(result, key);
-    } on ApiException catch (exception) {
-      if (creatingAccount &&
-          (exception.statusCode == 400 || exception.statusCode == 409)) {
-        await widget.vault.deleteIdentity(username);
+      await widget.onAuthenticated(profile, key);
+    } on FirebaseAuthException catch (exception) {
+      if (identitySaved) await widget.vault.deleteIdentity(username);
+      final account = pendingAccount;
+      if (account != null) await account.delete();
+      if (mounted) setState(() => error = _authErrorMessage(exception));
+    } on FirebaseException catch (exception) {
+      if (identitySaved) await widget.vault.deleteIdentity(username);
+      final account = pendingAccount;
+      if (account != null) {
+        await account.delete();
       }
+      await FirebaseAuth.instance.signOut();
+      if (mounted) {
+        setState(() => error =
+            'Could not access Firebase data: ${exception.message ?? exception.code}');
+      }
+    } on UsernameUnavailableException catch (exception) {
+      if (identitySaved) await widget.vault.deleteIdentity(username);
+      final account = pendingAccount;
+      if (account != null) await account.delete();
+      await FirebaseAuth.instance.signOut();
+      if (mounted) setState(() => error = exception.toString());
+    } on FormatException catch (exception) {
+      if (identitySaved) await widget.vault.deleteIdentity(username);
+      final account = pendingAccount;
+      if (account != null) await account.delete();
+      await FirebaseAuth.instance.signOut();
       if (mounted) setState(() => error = exception.message);
     } catch (exception) {
+      if (identitySaved) await widget.vault.deleteIdentity(username);
+      final account = pendingAccount;
+      if (account != null) await account.delete();
+      await FirebaseAuth.instance.signOut();
       if (mounted) {
         setState(() => error = 'Could not complete account action: $exception');
       }
@@ -252,6 +307,21 @@ class _AuthPageState extends State<AuthPage> {
       if (mounted) setState(() => busy = false);
     }
   }
+
+  String _authErrorMessage(FirebaseAuthException exception) => switch (
+        exception.code
+      ) {
+        'email-already-in-use' => 'An account already uses that email.',
+        'invalid-email' => 'Enter a valid email address.',
+        'weak-password' => 'Choose a stronger password.',
+        'user-not-found' || 'wrong-password' || 'invalid-credential' =>
+          'The email or password is incorrect.',
+        'network-request-failed' => 'Check your internet connection and try again.',
+        'operation-not-allowed' =>
+          'Email/password sign-in is not enabled in Firebase Authentication.',
+        'too-many-requests' => 'Too many attempts. Please wait and try again.',
+        _ => exception.message ?? 'Firebase Authentication failed.',
+      };
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -293,11 +363,24 @@ class _AuthPageState extends State<AuthPage> {
                     ),
                     const SizedBox(height: 24),
                     TextField(
-                      controller: usernameController,
+                      controller: emailController,
+                      keyboardType: TextInputType.emailAddress,
                       textInputAction: TextInputAction.next,
                       autocorrect: false,
-                      decoration: const InputDecoration(labelText: 'Username'),
+                      decoration:
+                          const InputDecoration(labelText: 'Email address'),
                     ),
+                    if (creatingAccount) ...[
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: usernameController,
+                        textInputAction: TextInputAction.next,
+                        autocorrect: false,
+                        decoration: const InputDecoration(
+                          labelText: 'Username (3–24 letters, numbers, _)',
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 12),
                     TextField(
                       controller: passwordController,
@@ -349,16 +432,16 @@ class _AuthPageState extends State<AuthPage> {
 class MainShell extends StatefulWidget {
   const MainShell({
     super.key,
-    required this.api,
+    required this.firebase,
     required this.vault,
-    required this.session,
+    required this.profile,
     required this.identity,
     required this.onLogout,
   });
 
-  final CryptoShieldApi api;
+  final FirebaseChatService firebase;
   final IdentityVault vault;
-  final AuthSession session;
+  final FirebaseUserProfile profile;
   final DeviceIdentity identity;
   final VoidCallback onLogout;
 
@@ -389,16 +472,16 @@ class _MainShellState extends State<MainShell> {
     final pages = [
       const HomePage(),
       MessagesPage(
-        api: widget.api,
+        firebase: widget.firebase,
         vault: widget.vault,
-        session: widget.session,
+        profile: widget.profile,
         identity: widget.identity,
       ),
       const AnalyzerPage(),
       const LabPage(),
       const InvestigationsPage(),
       ProfilePage(
-          username: widget.session.user.username, onLogout: widget.onLogout),
+          username: widget.profile.username, onLogout: widget.onLogout),
     ];
     return Scaffold(
       body: SafeArea(child: IndexedStack(index: index, children: pages)),
@@ -587,15 +670,15 @@ class HomePage extends StatelessWidget {
 class MessagesPage extends StatefulWidget {
   const MessagesPage({
     super.key,
-    required this.api,
+    required this.firebase,
     required this.vault,
-    required this.session,
+    required this.profile,
     required this.identity,
   });
 
-  final CryptoShieldApi api;
+  final FirebaseChatService firebase;
   final IdentityVault vault;
-  final AuthSession session;
+  final FirebaseUserProfile profile;
   final DeviceIdentity identity;
 
   @override
@@ -605,9 +688,10 @@ class MessagesPage extends StatefulWidget {
 class _MessagesPageState extends State<MessagesPage> {
   final recipientController = TextEditingController();
   final messageController = TextEditingController();
-  List<ConversationSummary> conversations = [];
-  List<(ChatMessage, String)> messages = [];
-  PublicIdentity? activeIdentity;
+  List<FirebaseConversation> conversations = [];
+  List<(FirebaseChatMessage, String)> messages = [];
+  FirebaseUserProfile? activeIdentity;
+  String? activeConversationId;
   String? activeRecipient;
   String? activeFingerprint;
   String? trustedFingerprint;
@@ -630,16 +714,18 @@ class _MessagesPageState extends State<MessagesPage> {
 
   Future<void> refreshConversations() async {
     try {
-      final result = await widget.api.getConversations(widget.session.token);
+      final result =
+          await widget.firebase.getConversations(widget.profile.uid);
       if (mounted) setState(() => conversations = result);
-    } on ApiException catch (exception) {
-      if (mounted) setState(() => error = exception.message);
+    } catch (exception) {
+      if (mounted) setState(() => error = 'Could not load conversations: $exception');
     }
   }
 
   Future<void> openConversation(String username) async {
     final peer = username.trim();
-    if (peer.isEmpty || peer == widget.session.user.username) {
+    if (peer.isEmpty ||
+        peer.toLowerCase() == widget.profile.username.toLowerCase()) {
       setState(() => error = 'Enter another registered username.');
       return;
     }
@@ -648,16 +734,14 @@ class _MessagesPageState extends State<MessagesPage> {
       error = null;
       activeRecipient = peer;
       activeIdentity = null;
+      activeConversationId = null;
       activeFingerprint = null;
       trustedFingerprint = null;
       verified = false;
       messages = [];
     });
     try {
-      final publicIdentity = await widget.api.getPublicIdentity(
-        token: widget.session.token,
-        username: peer,
-      );
+      final publicIdentity = await widget.firebase.getProfileByUsername(peer);
       final canonicalPeer = publicIdentity.username;
       final fingerprint = await EndToEndCrypto.fingerprintForPublicKeys(
         encryptionPublicKey: publicIdentity.encryptionPublicKey,
@@ -665,12 +749,13 @@ class _MessagesPageState extends State<MessagesPage> {
       );
       final savedTrust =
           await widget.vault.loadTrustedFingerprint(canonicalPeer);
-      await widget.api.createConversation(
-        token: widget.session.token,
-        username: canonicalPeer,
+      final conversationId = await widget.firebase.ensureConversation(
+        uid: widget.profile.uid,
+        otherUid: publicIdentity.uid,
       );
       if (!mounted) return;
       setState(() {
+        activeConversationId = conversationId;
         activeRecipient = canonicalPeer;
         recipientController.text = canonicalPeer;
         activeIdentity = publicIdentity;
@@ -680,11 +765,10 @@ class _MessagesPageState extends State<MessagesPage> {
       });
       if (savedTrust != fingerprint) {
         await showIdentityVerification(publicIdentity, fingerprint);
+      } else {
+        await loadMessages();
       }
-      if (verified) await loadMessages();
       await refreshConversations();
-    } on ApiException catch (exception) {
-      if (mounted) setState(() => error = exception.message);
     } catch (exception) {
       if (mounted) {
         setState(() => error = 'Could not open conversation: $exception');
@@ -695,7 +779,7 @@ class _MessagesPageState extends State<MessagesPage> {
   }
 
   Future<void> showIdentityVerification(
-    PublicIdentity peer,
+    FirebaseUserProfile peer,
     String fingerprint,
   ) async {
     final confirmed = await showDialog<bool>(
@@ -732,25 +816,28 @@ class _MessagesPageState extends State<MessagesPage> {
   Future<void> loadMessages() async {
     final peer = activeIdentity;
     final recipient = activeRecipient;
-    if (peer == null || recipient == null || !verified) return;
+    final conversationId = activeConversationId;
+    if (peer == null ||
+        recipient == null ||
+        conversationId == null ||
+        !verified) {
+      return;
+    }
     setState(() {
       busy = true;
       error = null;
     });
     try {
-      final encrypted = await widget.api.getMessages(
-        token: widget.session.token,
-        withUser: recipient,
-      );
-      final decrypted = <(ChatMessage, String)>[];
+      final encrypted = await widget.firebase.getMessages(conversationId);
+      final decrypted = <(FirebaseChatMessage, String)>[];
       for (final message in encrypted) {
         try {
           final plaintext = await EndToEndCrypto.decrypt(
             envelope: message.ciphertext,
             expectedSender: message.sender,
-            recipient: widget.session.user.username,
+            recipient: widget.profile.username,
             senderSigningPublicKey:
-                message.sender == widget.session.user.username
+                message.senderUid == widget.profile.uid
                     ? widget.identity.signingPublicKey
                     : peer.signingPublicKey,
             identity: widget.identity,
@@ -762,8 +849,6 @@ class _MessagesPageState extends State<MessagesPage> {
         }
       }
       if (mounted) setState(() => messages = decrypted);
-    } on ApiException catch (exception) {
-      if (mounted) setState(() => error = exception.message);
     } catch (exception) {
       if (mounted) {
         setState(() => error = 'Could not load messages: $exception');
@@ -777,7 +862,14 @@ class _MessagesPageState extends State<MessagesPage> {
     final text = messageController.text.trim();
     final recipient = activeRecipient;
     final peer = activeIdentity;
-    if (text.isEmpty || recipient == null || peer == null || !verified) return;
+    final conversationId = activeConversationId;
+    if (text.isEmpty ||
+        recipient == null ||
+        peer == null ||
+        conversationId == null ||
+        !verified) {
+      return;
+    }
     setState(() {
       busy = true;
       error = null;
@@ -785,20 +877,21 @@ class _MessagesPageState extends State<MessagesPage> {
     try {
       final ciphertext = await EndToEndCrypto.encrypt(
         plaintext: text,
-        sender: widget.session.user.username,
+        sender: widget.profile.username,
         recipient: recipient,
         recipientPublicKey: peer.encryptionPublicKey,
         identity: widget.identity,
       );
-      await widget.api.sendMessage(
-        token: widget.session.token,
+      await widget.firebase.sendMessage(
+        conversationId: conversationId,
+        senderUid: widget.profile.uid,
+        sender: widget.profile.username,
+        recipientUid: peer.uid,
         recipient: recipient,
         ciphertext: ciphertext,
       );
       messageController.clear();
       await loadMessages();
-    } on ApiException catch (exception) {
-      if (mounted) setState(() => error = exception.message);
     } catch (exception) {
       if (mounted) {
         setState(() => error = 'Could not send encrypted message: $exception');
@@ -811,7 +904,7 @@ class _MessagesPageState extends State<MessagesPage> {
   @override
   Widget build(BuildContext context) => PageFrame(
         title: 'Secure messages',
-        subtitle: 'Encrypt on this device. The server relays ciphertext only.',
+        subtitle: 'Encrypt on this device. Firestore stores ciphertext only.',
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -861,13 +954,15 @@ class _MessagesPageState extends State<MessagesPage> {
                 children: conversations
                     .map(
                       (conversation) => ActionChip(
-                        label: Text(conversation.otherUsername),
+                        label: Text(conversation.otherUser.username),
                         onPressed: busy
                             ? null
                             : () {
                                 recipientController.text =
-                                    conversation.otherUsername;
-                                openConversation(conversation.otherUsername);
+                                    conversation.otherUser.username;
+                                openConversation(
+                                  conversation.otherUser.username,
+                                );
                               },
                       ),
                     )
@@ -909,7 +1004,7 @@ class _MessagesPageState extends State<MessagesPage> {
               if (busy) const LinearProgressIndicator(),
               ...messages.map(
                 (entry) => Align(
-                  alignment: entry.$1.sender == widget.session.user.username
+                  alignment: entry.$1.senderUid == widget.profile.uid
                       ? Alignment.centerRight
                       : Alignment.centerLeft,
                   child: Container(
@@ -917,7 +1012,7 @@ class _MessagesPageState extends State<MessagesPage> {
                     padding: const EdgeInsets.all(13),
                     constraints: const BoxConstraints(maxWidth: 300),
                     decoration: BoxDecoration(
-                      color: entry.$1.sender == widget.session.user.username
+                      color: entry.$1.senderUid == widget.profile.uid
                           ? const Color(0xFF16436A)
                           : panel,
                       borderRadius: BorderRadius.circular(15),
