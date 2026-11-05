@@ -94,9 +94,8 @@ class FirebaseChatService {
       );
     }
 
-    final usernameRef = _firestore
-        .collection('usernames')
-        .doc(normalizedUsername);
+    final usernameRef =
+        _firestore.collection('usernames').doc(normalizedUsername);
     final profileRef = _firestore.collection('users').doc(uid);
     await _firestore.runTransaction((transaction) async {
       final usernameSnapshot = await transaction.get(usernameRef);
@@ -146,9 +145,11 @@ class FirebaseChatService {
         .collection('conversations')
         .where('participants', arrayContains: uid)
         .get();
-    final conversations = await Future.wait(snapshots.docs.map((snapshot) async {
+    final conversations =
+        await Future.wait(snapshots.docs.map((snapshot) async {
       final participants = List<String>.from(snapshot.data()['participants']);
-      final otherUid = participants.singleWhere((participant) => participant != uid);
+      final otherUid =
+          participants.singleWhere((participant) => participant != uid);
       return FirebaseConversation(
         id: snapshot.id,
         otherUser: await getProfileByUid(otherUid),

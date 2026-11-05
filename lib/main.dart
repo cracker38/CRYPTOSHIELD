@@ -204,7 +204,8 @@ class _AuthPageState extends State<AuthPage> {
     final username = usernameController.text.trim();
     final password = passwordController.text;
     if (email.isEmpty || password.length < 12) {
-      setState(() => error = 'Enter a valid email and a password of at least 12 characters.');
+      setState(() => error =
+          'Enter a valid email and a password of at least 12 characters.');
       return;
     }
     if (creatingAccount &&
@@ -308,15 +309,17 @@ class _AuthPageState extends State<AuthPage> {
     }
   }
 
-  String _authErrorMessage(FirebaseAuthException exception) => switch (
-        exception.code
-      ) {
+  String _authErrorMessage(FirebaseAuthException exception) =>
+      switch (exception.code) {
         'email-already-in-use' => 'An account already uses that email.',
         'invalid-email' => 'Enter a valid email address.',
         'weak-password' => 'Choose a stronger password.',
-        'user-not-found' || 'wrong-password' || 'invalid-credential' =>
+        'user-not-found' ||
+        'wrong-password' ||
+        'invalid-credential' =>
           'The email or password is incorrect.',
-        'network-request-failed' => 'Check your internet connection and try again.',
+        'network-request-failed' =>
+          'Check your internet connection and try again.',
         'operation-not-allowed' =>
           'Email/password sign-in is not enabled in Firebase Authentication.',
         'too-many-requests' => 'Too many attempts. Please wait and try again.',
@@ -480,8 +483,7 @@ class _MainShellState extends State<MainShell> {
       const AnalyzerPage(),
       const LabPage(),
       const InvestigationsPage(),
-      ProfilePage(
-          username: widget.profile.username, onLogout: widget.onLogout),
+      ProfilePage(username: widget.profile.username, onLogout: widget.onLogout),
     ];
     return Scaffold(
       body: SafeArea(child: IndexedStack(index: index, children: pages)),
@@ -714,11 +716,11 @@ class _MessagesPageState extends State<MessagesPage> {
 
   Future<void> refreshConversations() async {
     try {
-      final result =
-          await widget.firebase.getConversations(widget.profile.uid);
+      final result = await widget.firebase.getConversations(widget.profile.uid);
       if (mounted) setState(() => conversations = result);
     } catch (exception) {
-      if (mounted) setState(() => error = 'Could not load conversations: $exception');
+      if (mounted)
+        setState(() => error = 'Could not load conversations: $exception');
     }
   }
 
@@ -836,10 +838,9 @@ class _MessagesPageState extends State<MessagesPage> {
             envelope: message.ciphertext,
             expectedSender: message.sender,
             recipient: widget.profile.username,
-            senderSigningPublicKey:
-                message.senderUid == widget.profile.uid
-                    ? widget.identity.signingPublicKey
-                    : peer.signingPublicKey,
+            senderSigningPublicKey: message.senderUid == widget.profile.uid
+                ? widget.identity.signingPublicKey
+                : peer.signingPublicKey,
             identity: widget.identity,
           );
           decrypted.add((message, plaintext));
