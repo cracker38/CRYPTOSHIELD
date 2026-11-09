@@ -393,6 +393,7 @@ def issue_onboarding_challenge(user_id: int) -> dict[str, object]:
     now = datetime.now(timezone.utc)
     conn = get_db_connection()
     try:
+        conn.execute("BEGIN IMMEDIATE")
         user = conn.execute(
             "SELECT account_status, challenge_attempts, challenge_window_started_at FROM users WHERE id = ?",
             (user_id,),
@@ -629,6 +630,7 @@ def answer_onboarding_challenge(payload: OnboardingAnswerRequest) -> dict[str, o
     now = datetime.now(timezone.utc)
     conn = get_db_connection()
     try:
+        conn.execute("BEGIN IMMEDIATE")
         challenge = conn.execute(
             """
             SELECT c.*, u.username, u.role, u.account_status,
@@ -691,10 +693,14 @@ def answer_onboarding_challenge(payload: OnboardingAnswerRequest) -> dict[str, o
                 """
                 UPDATE users
                 SET challenge_attempts = ?,
-                    challenge_window_started_at = COALESCE(challenge_window_started_at, ?)
+                    challenge_window_started_at = ?
                 WHERE id = ?
                 """,
-                (attempts_in_window, now.isoformat(), challenge["user_id"]),
+                (
+                    attempts_in_window,
+                    window_started_at or now.isoformat(),
+                    challenge["user_id"],
+                ),
             )
             record_account_event(conn, int(challenge["user_id"]), "challenge_failed")
             conn.commit()

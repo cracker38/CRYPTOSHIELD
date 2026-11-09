@@ -29,8 +29,11 @@ Set both variables together. The bootstrap password must be at least 10
 characters; user-created accounts require at least 12. On startup, an account matching `ADMIN_EMAIL` is
 granted the administrator role; if the account does not exist, it is created
 with `ADMIN_PASSWORD`. Keep the password in a secret manager and do not commit
-it to the repository. New accounts can be created from the app and require an
-email address and a password of at least 12 characters.
+it to the repository. New accounts require an email address and a password of
+at least 12 characters. Registration requests remain inactive until an
+administrator approves them. Approved applicants must pass a randomly
+selected, server-verified defensive security scenario before the first session
+is issued. Rejected, pending, and disabled accounts cannot sign in.
 
 Health check: `http://127.0.0.1:8000/health`
 
@@ -70,9 +73,12 @@ include Firebase or Cloud Firestore configuration.
 ## API capabilities
 
 - `POST /v1/register`, `POST /v1/login`, `GET /v1/me`, `POST /v1/logout`
+- `POST /v1/onboarding/answer` for an approved user's short-lived challenge
 - `GET /v1/conversations`, `POST /v1/conversations`
 - `GET /v1/messages`, `POST /v1/messages`
 - Administrator-only `GET /v1/admin/overview`
+- Administrator-only `POST /v1/admin/users/{id}/review` to approve or reject
+  registration requests
 - Administrator-only `PATCH /v1/admin/users/{id}` to disable or re-enable an account
 
 Run backend tests from the repository root with `python -m pytest`.
@@ -98,3 +104,7 @@ Before handling real secrets or deploying publicly:
    attachment encryption, replay protection, threat modelling and independent
    security testing.
 5. Keep analysis opt-in, authorized and separate from messaging.
+
+The onboarding scenario is a basic knowledge check, not identity verification,
+MFA, or proof of professional cybersecurity competence. Use a stronger
+identity and access-management process for a real security team.

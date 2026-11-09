@@ -295,18 +295,23 @@ class _AuthPageState extends State<AuthPage> {
                           ),
                         ),
                         const SizedBox(height: 12),
-                        ...options.map((item) {
-                          final option = item as Map<String, dynamic>;
-                          return RadioListTile<String>(
-                            value: option['id'] as String,
-                            groupValue: selectedOption,
-                            onChanged: busy
-                                ? null
-                                : (value) => setState(() => selectedOption = value),
-                            title: Text(option['text'] as String),
-                            contentPadding: EdgeInsets.zero,
-                          );
-                        }),
+                        RadioGroup<String>(
+                          groupValue: selectedOption,
+                          onChanged: (value) {
+                            if (!busy) setState(() => selectedOption = value);
+                          },
+                          child: Column(
+                            children: options.map((item) {
+                              final option = item as Map<String, dynamic>;
+                              return RadioListTile<String>(
+                                value: option['id'] as String,
+                                title: Text(option['text'] as String),
+                                enabled: !busy,
+                                contentPadding: EdgeInsets.zero,
+                              );
+                            }).toList(),
+                          ),
+                        ),
                         const SizedBox(height: 12),
                         FilledButton(
                           onPressed: busy || selectedOption == null ? null : submit,
