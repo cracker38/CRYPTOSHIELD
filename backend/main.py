@@ -133,8 +133,8 @@ def bootstrap_admin() -> None:
         raise RuntimeError("Both ADMIN_EMAIL and ADMIN_PASSWORD must be configured together.")
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
         raise RuntimeError("ADMIN_EMAIL must be a valid email address.")
-    if len(password) < 12:
-        raise RuntimeError("ADMIN_PASSWORD must be at least 12 characters.")
+    if len(password) < 10:
+        raise RuntimeError("ADMIN_PASSWORD must be at least 10 characters.")
 
     conn = get_db_connection()
     try:
@@ -229,7 +229,13 @@ def get_current_user(request: Request) -> sqlite3.Row:
     conn = get_db_connection()
     try:
         session = conn.execute(
-            "SELECT s.*, u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?",
+            """
+            SELECT s.token, s.user_id, s.expires_at,
+                   u.id, u.username, u.password_hash, u.password_salt,
+                   u.encryption_key, u.created_at, u.role, u.is_active
+            FROM sessions s JOIN users u ON u.id = s.user_id
+            WHERE s.token = ?
+            """,
             (token,),
         ).fetchone()
     finally:

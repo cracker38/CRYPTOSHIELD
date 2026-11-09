@@ -63,7 +63,7 @@ class ApiClient {
     } on ApiException {
       rethrow;
     } catch (_) {
-      throw ApiException('Could not reach the server at $apiBaseUrl.');
+      throw const ApiException('Could not reach the configured server.');
     }
 
     dynamic payload;
@@ -449,7 +449,7 @@ class _BrandMark extends StatelessWidget {
             width: 48,
             height: 48,
             decoration: BoxDecoration(
-              color: blue.withOpacity(.14),
+              color: blue.withValues(alpha: .14),
               borderRadius: BorderRadius.circular(15),
             ),
             child:
@@ -581,7 +581,7 @@ Widget featureTile(
           width: 42,
           height: 42,
           decoration: BoxDecoration(
-            color: color.withOpacity(.13),
+            color: color.withValues(alpha: .13),
             borderRadius: BorderRadius.circular(13),
           ),
           child: Icon(icon, color: color),
@@ -1123,8 +1123,9 @@ class _LabPageState extends State<LabPage> {
       String.fromCharCodes(text.runes.map((code) {
         final shift = amount % 26;
         if (code >= 65 && code <= 90) return 65 + (code - 65 - shift + 26) % 26;
-        if (code >= 97 && code <= 122)
+        if (code >= 97 && code <= 122) {
           return 97 + (code - 97 - shift + 26) % 26;
+        }
         return code;
       }));
 

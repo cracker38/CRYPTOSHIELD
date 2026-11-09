@@ -25,7 +25,8 @@ export ADMIN_PASSWORD='choose-a-unique-password-of-at-least-12-characters'
 uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
-Set both variables together. On startup, an account matching `ADMIN_EMAIL` is
+Set both variables together. The bootstrap password must be at least 10
+characters; user-created accounts require at least 12. On startup, an account matching `ADMIN_EMAIL` is
 granted the administrator role; if the account does not exist, it is created
 with `ADMIN_PASSWORD`. Keep the password in a secret manager and do not commit
 it to the repository. New accounts can be created from the app and require an
