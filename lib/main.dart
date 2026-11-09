@@ -101,6 +101,7 @@ class ApiClient {
       )) as Map<String, dynamic>;
 
   Future<Map<String, dynamic>> login(String email, String password) async {
+    token = null;
     final result = await request(
       'POST',
       '/v1/login',

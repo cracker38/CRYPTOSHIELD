@@ -286,10 +286,22 @@ def test_approval_challenge_rejects_wrong_answers_and_is_single_use(tmp_path, mo
             headers={"Authorization": f"Bearer {token}"},
         ).status_code == 401
 
-        completed = client.post(
+        refreshed_challenge = client.post(
+            "/v1/login",
+            json={
+                "username": "candidate@example.com",
+                "password": "StrongPassword123!",
+            },
+        )
+        assert refreshed_challenge.status_code == 200
+        assert [
+            option["id"] for option in refreshed_challenge.json()["challenge"]["options"]
+        ] != [option["id"] for option in details["options"]]
+        assert client.post(
             "/v1/onboarding/answer",
             json={"challenge_token": token, "option_id": correct_option_id},
-        )
+        ).status_code == 401
+        completed = complete_challenge(client, refreshed_challenge)
         assert completed.status_code == 200
         assert client.get(
             "/v1/me",
@@ -297,5 +309,8 @@ def test_approval_challenge_rejects_wrong_answers_and_is_single_use(tmp_path, mo
         ).status_code == 200
         assert client.post(
             "/v1/onboarding/answer",
-            json={"challenge_token": token, "option_id": correct_option_id},
+            json={
+                "challenge_token": refreshed_challenge.json()["challenge_token"],
+                "option_id": correct_option_id,
+            },
         ).status_code == 401

@@ -814,6 +814,7 @@ def review_user(
 ) -> dict[str, object]:
     conn = get_db_connection()
     try:
+        conn.execute("BEGIN IMMEDIATE")
         target = conn.execute(
             "SELECT id, username, role, account_status FROM users WHERE id = ?",
             (user_id,),

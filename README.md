@@ -95,9 +95,9 @@ Before handling real secrets or deploying publicly:
 
 1. Use TLS, production-grade secret management, backups, monitoring and
    database access controls.
-2. Move from SQLite to a managed database and add rate limiting, account
-   recovery, email verification, audit events and stronger session lifecycle
-   controls.
+2. Move from SQLite to a managed database and add comprehensive rate limiting,
+   account recovery, email verification, audit monitoring and stronger session
+   lifecycle controls.
 3. Use a maintained, independently audited end-to-end encryption protocol.
    Do not invent a protocol or upload private keys.
 4. Add secure device storage, identity verification, forward secrecy,
