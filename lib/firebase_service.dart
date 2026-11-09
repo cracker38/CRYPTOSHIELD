@@ -82,10 +82,21 @@ class FirebaseService implements CryptoShieldService {
       await user.sendEmailVerification();
       await _call('submitRegistration');
       await _auth.signOut();
-    } on FirebaseAuthException catch (error) {
-      throw ApiException(error.message ?? 'Account registration failed (${error.code}).');
-    } on FirebaseException catch (error) {
-      throw ApiException(error.message ?? 'Firebase registration failed (${error.code}).');
+    } catch (error) {
+      if (credential?.user?.uid == _auth.currentUser?.uid) {
+        await _auth.signOut();
+      }
+      if (error is FirebaseAuthException) {
+        throw ApiException(
+          error.message ?? 'Account registration failed (${error.code}).',
+        );
+      }
+      if (error is FirebaseException) {
+        throw ApiException(
+          error.message ?? 'Firebase registration failed (${error.code}).',
+        );
+      }
+      rethrow;
     }
   }
 
@@ -153,9 +164,14 @@ class FirebaseService implements CryptoShieldService {
         'status': 'logged_in',
         'user': _userMap(user, profile.data()!),
       };
+    } on ApiException {
+      await _auth.signOut();
+      rethrow;
     } on FirebaseAuthException catch (error) {
+      await _auth.signOut();
       throw ApiException(error.message ?? 'Sign-in failed (${error.code}).');
     } on FirebaseException catch (error) {
+      await _auth.signOut();
       throw ApiException(error.message ?? 'Firebase sign-in failed (${error.code}).');
     }
   }
@@ -165,10 +181,16 @@ class FirebaseService implements CryptoShieldService {
     String challengeToken,
     String optionId,
   ) async {
-    final result = await _call('answerOnboarding', {
-      'challengeToken': challengeToken,
-      'optionId': optionId,
-    });
+    final Map<String, dynamic> result;
+    try {
+      result = await _call('answerOnboarding', {
+        'challengeToken': challengeToken,
+        'optionId': optionId,
+      });
+    } on ApiException {
+      await _auth.signOut();
+      rethrow;
+    }
     final user = _auth.currentUser;
     if (user == null) {
       throw const ApiException('Sign in again before completing onboarding.');
