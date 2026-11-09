@@ -1,6 +1,6 @@
 # CRYPTOSHIELD
 
-CRYPTOSHIELD is an Android Flutter app using Firebase Authentication,
+CRYPTOSHIELD is a Flutter app using Firebase Authentication,
 Cloud Firestore, App Check, and trusted Cloud Functions. Account registration,
 administrator approval, the onboarding challenge, messaging, and Analyzer/Lab
 history use Firebase. The previous FastAPI/SQLite service is no longer used by
@@ -8,9 +8,9 @@ the app.
 
 ## Firebase project setup
 
-The Android client is configured for the `cryptoshell-a5beb` Firebase project.
-Keep `android/app/src/google-services.json` in place locally. It contains
-client configuration, not a server credential.
+The Android and web clients are configured for the `cryptoshell-a5beb` Firebase
+project. Keep `android/app/src/google-services.json` in place locally. It
+contains client configuration, not a server credential.
 
 Before deploying, in the Firebase Console:
 
@@ -22,6 +22,11 @@ Before deploying, in the Firebase Console:
 3. Register the Android app (`com.example.cryptoshield_ai`) in **App Check**.
    Configure **Play Integrity** for release builds. Add your release signing
    certificate SHA-256 fingerprint in Firebase/Play Console as required.
+   Register the **CryptoShield Web** app with the **Fraud Defense**
+   (reCAPTCHA Enterprise) App Check provider. The web client has a public site
+   key configured; override it with `FIREBASE_APP_CHECK_RECAPTCHA_SITE_KEY`
+   when running or building if needed. Keep any reCAPTCHA secret key private;
+   it is not used by the Flutter client.
 4. Billing must be enabled for Cloud Functions deployment. App Check debug
    tokens are only for development; run a debug build, copy the generated
    token from the device logs, and register it in **App Check → Manage debug
@@ -43,7 +48,14 @@ firebase deploy --only firestore:rules,firestore:indexes,functions
 
 Functions use enforced App Check. Verify the debug App Check token is registered
 before testing registration or admin actions; otherwise those callable
-operations are intentionally rejected.
+operations are intentionally rejected. The web client uses its configured
+reCAPTCHA Enterprise site key by default. Override it for another environment
+if needed:
+
+```bash
+flutter run -d chrome
+flutter build web
+```
 
 The app checks both App Check and the Firestore-backed `healthCheck` callable
 on startup and fails closed with a retryable error if Firebase is unavailable.
@@ -107,9 +119,9 @@ flutter analyze
 flutter test
 ```
 
-Firebase initialization is currently configured for Android only. Other
-platforms need their own Firebase app registration and generated Firebase
-options before being enabled.
+Firebase initialization is configured for Android and web. Other platforms
+still need their own Firebase app registration and platform-specific setup
+before being enabled.
 
 Firestore encrypts stored data at rest, but messages are **not end-to-end
 encrypted**: authorized clients can read conversation contents. Do not send

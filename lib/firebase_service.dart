@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'firebase_web_options.dart';
 
 class ApiException implements Exception {
   const ApiException(this.message);
@@ -379,18 +380,31 @@ class FirebaseStartupException implements Exception {
 }
 
 Future<void> initializeFirebase() async {
-  if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+  if (!kIsWeb && defaultTargetPlatform != TargetPlatform.android) {
     throw const FirebaseStartupException(
-      'Firebase is currently configured for the Android app only.',
+      'Firebase is currently configured for Android and web only.',
     );
   }
+
+  const appCheckSiteKey = String.fromEnvironment(
+    'FIREBASE_APP_CHECK_RECAPTCHA_SITE_KEY',
+    defaultValue: '6LcppBguAAAAAAqvD2LjpSBXVzM9lJeNJ34Hc0bu',
+  );
+
   try {
-    await Firebase.initializeApp();
-    await FirebaseAppCheck.instance.activate(
-      providerAndroid: kDebugMode
-          ? const AndroidDebugProvider()
-          : const AndroidPlayIntegrityProvider(),
-    );
+    if (kIsWeb) {
+      await Firebase.initializeApp(options: firebaseWebOptions);
+      await FirebaseAppCheck.instance.activate(
+        providerWeb: ReCaptchaEnterpriseProvider(appCheckSiteKey),
+      );
+    } else {
+      await Firebase.initializeApp();
+      await FirebaseAppCheck.instance.activate(
+        providerAndroid: kDebugMode
+            ? const AndroidDebugProvider()
+            : const AndroidPlayIntegrityProvider(),
+      );
+    }
   } on FirebaseException catch (error) {
     throw FirebaseStartupException(
       error.message ?? 'Firebase initialization failed (${error.code}).',
@@ -401,7 +415,7 @@ Future<void> initializeFirebase() async {
     );
   } on MissingPluginException {
     throw const FirebaseStartupException(
-      'Firebase Android plugins are missing. Rebuild the app after fetching packages.',
+      'Firebase plugins are missing. Rebuild the app after fetching packages.',
     );
   }
 }
