@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Literal
 
 from cryptography.fernet import Fernet
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -15,6 +17,9 @@ from pydantic import BaseModel, Field
 BASE_DIR = Path(__file__).resolve().parent
 DATABASE_PATH = str(BASE_DIR / "cryptoshield.db")
 SESSION_TTL = timedelta(days=30)
+CHALLENGE_TTL = timedelta(minutes=10)
+CHALLENGE_ATTEMPT_LIMIT = 5
+CHALLENGE_ATTEMPT_WINDOW = timedelta(minutes=15)
 
 app = FastAPI(
     title="CRYPTOSHIELD AI API",
@@ -35,6 +40,15 @@ class LoginRequest(BaseModel):
 
 class UserStatusRequest(BaseModel):
     is_active: bool
+
+
+class AdminReviewRequest(BaseModel):
+    decision: Literal["approve", "reject"]
+
+
+class OnboardingAnswerRequest(BaseModel):
+    challenge_token: str = Field(min_length=32, max_length=128)
+    option_id: str = Field(min_length=8, max_length=64)
 
 
 class CreateConversationRequest(BaseModel):
@@ -69,7 +83,10 @@ def initialize_db() -> None:
                 encryption_key TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 role TEXT NOT NULL DEFAULT 'user',
-                is_active INTEGER NOT NULL DEFAULT 1
+                is_active INTEGER NOT NULL DEFAULT 1,
+                account_status TEXT NOT NULL DEFAULT 'active',
+                challenge_attempts INTEGER NOT NULL DEFAULT 0,
+                challenge_window_started_at TEXT
             )
             """
         )
@@ -78,6 +95,18 @@ def initialize_db() -> None:
             conn.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
         if "is_active" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+        if "account_status" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN account_status TEXT NOT NULL DEFAULT 'active'")
+            conn.execute(
+                """
+                UPDATE users
+                SET account_status = CASE WHEN is_active = 1 THEN 'active' ELSE 'disabled' END
+                """
+            )
+        if "challenge_attempts" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN challenge_attempts INTEGER NOT NULL DEFAULT 0")
+        if "challenge_window_started_at" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN challenge_window_started_at TEXT")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS sessions (
@@ -86,6 +115,38 @@ def initialize_db() -> None:
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
                 FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS onboarding_challenges (
+                token_hash TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                question TEXT NOT NULL,
+                options_json TEXT NOT NULL,
+                answer_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                consumed INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS onboarding_challenges_user_id ON onboarding_challenges(user_id)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS account_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_user_id INTEGER,
+                subject_user_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(actor_user_id) REFERENCES users(id),
+                FOREIGN KEY(subject_user_id) REFERENCES users(id)
             )
             """
         )
@@ -158,7 +219,10 @@ def bootstrap_admin() -> None:
                 ),
             )
         else:
-            conn.execute("UPDATE users SET role = 'admin', is_active = 1 WHERE id = ?", (existing["id"],))
+            conn.execute(
+                "UPDATE users SET role = 'admin', is_active = 1, account_status = 'active' WHERE id = ?",
+                (existing["id"],),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -201,23 +265,192 @@ def get_user_by_id(user_id: int) -> sqlite3.Row | None:
 
 
 def create_session(user_id: int) -> str:
-    token = secrets.token_urlsafe(32)
-    now = datetime.now(timezone.utc)
-    expires_at = (now + SESSION_TTL).isoformat()
     conn = get_db_connection()
     try:
+        token = insert_session(conn, user_id)
+        conn.commit()
+        return token
+    finally:
+        conn.close()
+
+
+def insert_session(conn: sqlite3.Connection, user_id: int) -> str:
+    token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    conn.execute(
+        "DELETE FROM sessions WHERE user_id = ?",
+        (user_id,),
+    )
+    conn.execute(
+        "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+        (token, user_id, now.isoformat(), (now + SESSION_TTL).isoformat()),
+    )
+    return token
+
+
+def record_account_event(
+    conn: sqlite3.Connection,
+    subject_user_id: int,
+    event_type: str,
+    actor_user_id: int | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO account_audit_log (actor_user_id, subject_user_id, event_type, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (actor_user_id, subject_user_id, event_type, datetime.now(timezone.utc).isoformat()),
+    )
+
+
+SECURITY_SCENARIOS = (
+    (
+        "A teammate reports an unexpected multi-factor authentication prompt. What is the safest first response?",
+        (
+            "Deny the prompt and report it through the approved security channel.",
+            "Approve it once to stop the notifications.",
+            "Share the prompt details with a coworker in a public chat.",
+            "Ignore it and continue using the account.",
+        ),
+        0,
+    ),
+    (
+        "A browser warns that an internal service certificate is invalid. What should you do?",
+        (
+            "Stop and report the issue; do not bypass the certificate warning.",
+            "Disable certificate checks for the session.",
+            "Continue if the page looks familiar.",
+            "Copy the warning into a public forum with the service URL.",
+        ),
+        0,
+    ),
+    (
+        "You receive an unexpected attachment asking you to review an urgent invoice. What is the safest action?",
+        (
+            "Do not open it; report it using the organization's phishing process.",
+            "Open it in your normal account to identify the sender.",
+            "Forward it to teammates to ask whether it is legitimate.",
+            "Reply to the sender requesting proof of identity.",
+        ),
+        0,
+    ),
+    (
+        "A production device may be compromised. What should you prioritize?",
+        (
+            "Follow the incident-response plan, limit exposure, and preserve evidence.",
+            "Delete files that look suspicious before notifying anyone.",
+            "Post system details in an unrestricted chat for quick help.",
+            "Reinstall immediately without recording what happened.",
+        ),
+        0,
+    ),
+    (
+        "A colleague asks for administrator access to complete a short task. What is the best practice?",
+        (
+            "Grant only the minimum required access for the shortest necessary time.",
+            "Share your own administrator credentials.",
+            "Grant permanent administrator access to avoid future delays.",
+            "Disable access controls until the task is complete.",
+        ),
+        0,
+    ),
+    (
+        "A backup job reports success. What best demonstrates that recovery is dependable?",
+        (
+            "Perform controlled restore tests and verify data integrity.",
+            "Assume the job worked because it returned a success message.",
+            "Keep the only backup on the same device as the source.",
+            "Wait until an incident to find out whether restoration works.",
+        ),
+        0,
+    ),
+    (
+        "You suspect your password was exposed. What is the safest response?",
+        (
+            "Report it and change it through the trusted account recovery path.",
+            "Reuse it with a small change on all work systems.",
+            "Send it to the security team in ordinary email.",
+            "Wait to see whether an account alert arrives.",
+        ),
+        0,
+    ),
+)
+
+
+def generate_security_challenge() -> tuple[str, list[dict[str, str]], int]:
+    question, answers, correct_index = secrets.choice(SECURITY_SCENARIOS)
+    options = [
+        {"id": secrets.token_urlsafe(9), "text": answer}
+        for answer in answers
+    ]
+    secrets.SystemRandom().shuffle(options)
+    correct_text = answers[correct_index]
+    correct_option_id = next(option["id"] for option in options if option["text"] == correct_text)
+    return question, options, correct_option_id
+
+
+def issue_onboarding_challenge(user_id: int) -> dict[str, object]:
+    now = datetime.now(timezone.utc)
+    conn = get_db_connection()
+    try:
+        user = conn.execute(
+            "SELECT account_status, challenge_attempts, challenge_window_started_at FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        if user is None or user["account_status"] != "challenge_required":
+            raise HTTPException(status_code=403, detail="This account is not awaiting an onboarding challenge.")
+
+        window_started_at = user["challenge_window_started_at"]
+        attempts = int(user["challenge_attempts"])
+        if window_started_at:
+            window_start = datetime.fromisoformat(window_started_at)
+            if now - window_start >= CHALLENGE_ATTEMPT_WINDOW:
+                attempts = 0
+                window_started_at = None
+        if attempts >= CHALLENGE_ATTEMPT_LIMIT:
+            retry_at = datetime.fromisoformat(window_started_at) + CHALLENGE_ATTEMPT_WINDOW
+            raise HTTPException(
+                status_code=429,
+                detail=f"Challenge attempts are temporarily limited. Try again after {retry_at.isoformat()}.",
+            )
+
+        token = secrets.token_urlsafe(32)
+        question, options, correct_option_id = generate_security_challenge()
+        answer_hash = hashlib.sha256(f"{token}:{correct_option_id}".encode("utf-8")).hexdigest()
+        expires_at = (now + CHALLENGE_TTL).isoformat()
         conn.execute(
-            "DELETE FROM sessions WHERE user_id = ?",
+            "UPDATE onboarding_challenges SET consumed = 1 WHERE user_id = ? AND consumed = 0",
             (user_id,),
         )
         conn.execute(
-            "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
-            (token, user_id, now.isoformat(), expires_at),
+            """
+            INSERT INTO onboarding_challenges
+                (token_hash, user_id, question, options_json, answer_hash, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                hashlib.sha256(token.encode("utf-8")).hexdigest(),
+                user_id,
+                question,
+                json.dumps(options),
+                answer_hash,
+                now.isoformat(),
+                expires_at,
+            ),
         )
+        if window_started_at is None:
+            conn.execute(
+                "UPDATE users SET challenge_window_started_at = ? WHERE id = ?",
+                (now.isoformat(), user_id),
+            )
+        record_account_event(conn, user_id, "challenge_issued")
         conn.commit()
+        return {
+            "challenge_token": token,
+            "challenge": {"question": question, "options": options, "expires_at": expires_at},
+        }
     finally:
         conn.close()
-    return token
 
 
 def get_current_user(request: Request) -> sqlite3.Row:
@@ -334,20 +567,28 @@ def register_user(payload: RegisterRequest) -> dict[str, object]:
     try:
         try:
             cursor = conn.execute(
-                "INSERT INTO users (username, password_hash, password_salt, encryption_key, created_at) VALUES (?, ?, ?, ?, ?)",
+                """
+                INSERT INTO users
+                    (username, password_hash, password_salt, encryption_key, created_at,
+                     is_active, account_status)
+                VALUES (?, ?, ?, ?, ?, 0, 'pending_review')
+                """,
                 (username, f"{salt}${password_hash}", salt, encryption_key, now),
             )
         except sqlite3.IntegrityError as error:
             raise HTTPException(status_code=409, detail="This email is already registered.") from error
         conn.commit()
         user_id = cursor.lastrowid
+        record_account_event(conn, user_id, "registration_submitted")
+        conn.commit()
     finally:
         conn.close()
 
     return {
         "status": "registered",
         "user": {"id": user_id, "username": username, "role": "user"},
-        "message": "Account created. Sign in to continue.",
+        "status": "pending_review",
+        "message": "Registration submitted. An administrator must review your request.",
     }
 
 
@@ -357,11 +598,21 @@ def login_user(payload: LoginRequest) -> dict[str, object]:
     if user is None:
         raise HTTPException(status_code=401, detail="Invalid username or password.")
 
-    if not user["is_active"]:
-        raise HTTPException(status_code=403, detail="This account has been disabled.")
-
     if not verify_password(payload.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid username or password.")
+
+    account_status = user["account_status"]
+    if account_status == "pending_review":
+        raise HTTPException(status_code=403, detail="Your account request is awaiting administrator review.")
+    if account_status == "rejected":
+        raise HTTPException(status_code=403, detail="Your account request was not approved.")
+    if account_status == "challenge_required":
+        return {
+            "status": "challenge_required",
+            **issue_onboarding_challenge(int(user["id"])),
+        }
+    if account_status == "disabled" or not user["is_active"]:
+        raise HTTPException(status_code=403, detail="This account has been disabled.")
 
     token = create_session(int(user["id"]))
 
@@ -370,6 +621,120 @@ def login_user(payload: LoginRequest) -> dict[str, object]:
         "token": token,
         "user": {"id": user["id"], "username": user["username"], "role": user["role"]},
     }
+
+
+@app.post("/v1/onboarding/answer")
+def answer_onboarding_challenge(payload: OnboardingAnswerRequest) -> dict[str, object]:
+    token_hash = hashlib.sha256(payload.challenge_token.encode("utf-8")).hexdigest()
+    now = datetime.now(timezone.utc)
+    conn = get_db_connection()
+    try:
+        challenge = conn.execute(
+            """
+            SELECT c.*, u.username, u.role, u.account_status,
+                   u.challenge_attempts, u.challenge_window_started_at
+            FROM onboarding_challenges c
+            JOIN users u ON u.id = c.user_id
+            WHERE c.token_hash = ?
+            """,
+            (token_hash,),
+        ).fetchone()
+        if challenge is None or challenge["consumed"]:
+            raise HTTPException(status_code=401, detail="Challenge is invalid or has already been used.")
+
+        if datetime.fromisoformat(challenge["expires_at"]) <= now:
+            conn.execute(
+                "UPDATE onboarding_challenges SET consumed = 1 WHERE token_hash = ?",
+                (token_hash,),
+            )
+            conn.commit()
+            raise HTTPException(status_code=410, detail="Challenge expired. Sign in to request a new one.")
+
+        if challenge["account_status"] != "challenge_required":
+            conn.execute(
+                "UPDATE onboarding_challenges SET consumed = 1 WHERE token_hash = ?",
+                (token_hash,),
+            )
+            conn.commit()
+            raise HTTPException(status_code=409, detail="This account is no longer awaiting a challenge.")
+
+        window_started_at = challenge["challenge_window_started_at"]
+        attempts_in_window = int(challenge["challenge_attempts"])
+        if window_started_at:
+            if now - datetime.fromisoformat(window_started_at) >= CHALLENGE_ATTEMPT_WINDOW:
+                attempts_in_window = 0
+                window_started_at = None
+        if attempts_in_window >= CHALLENGE_ATTEMPT_LIMIT:
+            raise HTTPException(
+                status_code=429,
+                detail="Challenge attempts are temporarily limited. Try again later.",
+            )
+
+        options = json.loads(challenge["options_json"])
+        valid_option = any(option["id"] == payload.option_id for option in options)
+        candidate_hash = hashlib.sha256(
+            f"{payload.challenge_token}:{payload.option_id}".encode("utf-8")
+        ).hexdigest()
+        if not valid_option or not secrets.compare_digest(candidate_hash, challenge["answer_hash"]):
+            attempts_in_window += 1
+            if attempts_in_window >= CHALLENGE_ATTEMPT_LIMIT:
+                conn.execute(
+                    "UPDATE onboarding_challenges SET attempts = attempts + 1, consumed = 1 WHERE token_hash = ?",
+                    (token_hash,),
+                )
+            else:
+                conn.execute(
+                    "UPDATE onboarding_challenges SET attempts = attempts + 1 WHERE token_hash = ?",
+                    (token_hash,),
+                )
+            conn.execute(
+                """
+                UPDATE users
+                SET challenge_attempts = ?,
+                    challenge_window_started_at = COALESCE(challenge_window_started_at, ?)
+                WHERE id = ?
+                """,
+                (attempts_in_window, now.isoformat(), challenge["user_id"]),
+            )
+            record_account_event(conn, int(challenge["user_id"]), "challenge_failed")
+            conn.commit()
+            if attempts_in_window >= CHALLENGE_ATTEMPT_LIMIT:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Challenge attempt limit reached. Try again after the temporary cooldown.",
+                )
+            raise HTTPException(status_code=400, detail="That answer is incorrect. Try again.")
+
+        conn.execute(
+            """
+            UPDATE onboarding_challenges SET consumed = 1
+            WHERE token_hash = ? AND consumed = 0
+            """,
+            (token_hash,),
+        )
+        conn.execute(
+            """
+            UPDATE users
+            SET account_status = 'active', is_active = 1,
+                challenge_attempts = 0, challenge_window_started_at = NULL
+            WHERE id = ? AND account_status = 'challenge_required'
+            """,
+            (challenge["user_id"],),
+        )
+        record_account_event(conn, int(challenge["user_id"]), "challenge_passed")
+        session_token = insert_session(conn, int(challenge["user_id"]))
+        conn.commit()
+        return {
+            "status": "logged_in",
+            "token": session_token,
+            "user": {
+                "id": challenge["user_id"],
+                "username": challenge["username"],
+                "role": challenge["role"],
+            },
+        }
+    finally:
+        conn.close()
 
 
 @app.get("/v1/me")
@@ -405,7 +770,10 @@ def admin_overview(admin: sqlite3.Row = Depends(require_admin)) -> dict[str, obj
     conn = get_db_connection()
     try:
         users = conn.execute(
-            "SELECT id, username, role, is_active, created_at FROM users ORDER BY created_at DESC"
+            """
+            SELECT id, username, role, is_active, account_status, created_at
+            FROM users ORDER BY created_at DESC
+            """
         ).fetchall()
         conversations = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
         messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
@@ -424,11 +792,66 @@ def admin_overview(admin: sqlite3.Row = Depends(require_admin)) -> dict[str, obj
                 "username": user["username"],
                 "role": user["role"],
                 "is_active": bool(user["is_active"]),
+                "account_status": user["account_status"],
                 "created_at": user["created_at"],
             }
             for user in users
         ],
     }
+
+
+@app.post("/v1/admin/users/{user_id}/review")
+def review_user(
+    user_id: int,
+    payload: AdminReviewRequest,
+    admin: sqlite3.Row = Depends(require_admin),
+) -> dict[str, object]:
+    conn = get_db_connection()
+    try:
+        target = conn.execute(
+            "SELECT id, username, role, account_status FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        if target is None:
+            raise HTTPException(status_code=404, detail="User was not found.")
+        if target["role"] == "admin":
+            raise HTTPException(status_code=400, detail="Administrator accounts cannot use applicant review.")
+        approved = payload.decision == "approve"
+        allowed_statuses = {"pending_review"} if approved else {"pending_review", "challenge_required"}
+        if target["account_status"] not in allowed_statuses:
+            raise HTTPException(status_code=409, detail="This account cannot be changed through applicant review.")
+        account_status = "challenge_required" if approved else "rejected"
+        conn.execute(
+            "UPDATE users SET account_status = ?, is_active = 0 WHERE id = ?",
+            (account_status, user_id),
+        )
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        conn.execute(
+            "UPDATE onboarding_challenges SET consumed = 1 WHERE user_id = ? AND consumed = 0",
+            (user_id,),
+        )
+        record_account_event(
+            conn,
+            user_id,
+            (
+                "registration_approved"
+                if approved
+                else (
+                    "registration_rejected"
+                    if target["account_status"] == "pending_review"
+                    else "approval_revoked"
+                )
+            ),
+            int(admin["id"]),
+        )
+        conn.commit()
+        return {
+            "id": user_id,
+            "username": target["username"],
+            "account_status": account_status,
+        }
+    finally:
+        conn.close()
 
 
 @app.patch("/v1/admin/users/{user_id}")
@@ -440,10 +863,21 @@ def set_user_status(
     conn = get_db_connection()
     try:
         target = conn.execute(
-            "SELECT id, username, role FROM users WHERE id = ?", (user_id,)
+            "SELECT id, username, role, account_status FROM users WHERE id = ?", (user_id,)
         ).fetchone()
         if target is None:
             raise HTTPException(status_code=404, detail="User was not found.")
+        if payload.is_active and target["account_status"] not in {"disabled", "active"}:
+            raise HTTPException(
+                status_code=409,
+                detail="Pending or rejected accounts must complete administrator review and onboarding.",
+            )
+        if not payload.is_active and target["account_status"] not in {
+            "active",
+            "challenge_required",
+            "disabled",
+        }:
+            raise HTTPException(status_code=409, detail="This account cannot be disabled in its current state.")
         if target["id"] == admin["id"] and not payload.is_active:
             raise HTTPException(status_code=400, detail="You cannot disable your own account.")
         if target["role"] == "admin" and not payload.is_active:
@@ -452,13 +886,33 @@ def set_user_status(
             ).fetchone()[0]
             if active_admins <= 1:
                 raise HTTPException(status_code=400, detail="The last active administrator cannot be disabled.")
-        conn.execute("UPDATE users SET is_active = ? WHERE id = ?", (int(payload.is_active), user_id))
+        account_status = "active" if payload.is_active else "disabled"
+        conn.execute(
+            "UPDATE users SET is_active = ?, account_status = ? WHERE id = ?",
+            (int(payload.is_active), account_status, user_id),
+        )
         if not payload.is_active:
             conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            conn.execute(
+                "UPDATE onboarding_challenges SET consumed = 1 WHERE user_id = ? AND consumed = 0",
+                (user_id,),
+            )
+        if account_status != target["account_status"]:
+            record_account_event(
+                conn,
+                user_id,
+                "account_enabled" if payload.is_active else "account_disabled",
+                int(admin["id"]),
+            )
         conn.commit()
     finally:
         conn.close()
-    return {"id": user_id, "username": target["username"], "is_active": payload.is_active}
+    return {
+        "id": user_id,
+        "username": target["username"],
+        "is_active": payload.is_active,
+        "account_status": account_status,
+    }
 
 
 @app.post("/v1/conversations")

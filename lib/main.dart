@@ -107,8 +107,10 @@ class ApiClient {
       authenticated: false,
       body: {'username': email, 'password': password},
     ) as Map<String, dynamic>;
-    token = result['token'] as String;
-    return result['user'] as Map<String, dynamic>;
+    if (result['status'] == 'logged_in') {
+      token = result['token'] as String;
+    }
+    return result;
   }
 
   Future<void> logout() async {
@@ -195,6 +197,9 @@ class _AuthPageState extends State<AuthPage> {
   bool creatingAccount = false;
   bool busy = false;
   bool obscurePassword = true;
+  Map<String, dynamic>? challenge;
+  String? challengeToken;
+  String? selectedOption;
 
   @override
   void dispose() {
@@ -205,14 +210,46 @@ class _AuthPageState extends State<AuthPage> {
   }
 
   Future<void> submit() async {
-    if (!formKey.currentState!.validate()) return;
+    if (challenge == null && !formKey.currentState!.validate()) return;
     setState(() => busy = true);
     try {
-      if (creatingAccount) {
+      if (challenge != null) {
+        final result = await widget.api.request(
+          'POST',
+          '/v1/onboarding/answer',
+          authenticated: false,
+          body: {
+            'challenge_token': challengeToken,
+            'option_id': selectedOption,
+          },
+        ) as Map<String, dynamic>;
+        widget.api.token = result['token'] as String;
+        if (mounted) widget.onAuthenticated(result['user'] as Map<String, dynamic>);
+      } else if (creatingAccount) {
         await widget.api.register(email.text.trim(), password.text);
+        if (mounted) {
+          setState(() => creatingAccount = false);
+          password.clear();
+          confirmation.clear();
+          showMessage(
+            context,
+            'Registration submitted. Sign in after an administrator reviews your request.',
+          );
+        }
+      } else {
+        final result = await widget.api.login(email.text.trim(), password.text);
+        if (result['status'] == 'challenge_required') {
+          if (mounted) {
+            setState(() {
+              challenge = result['challenge'] as Map<String, dynamic>;
+              challengeToken = result['challenge_token'] as String;
+              selectedOption = null;
+            });
+          }
+          return;
+        }
+        if (mounted) widget.onAuthenticated(result['user'] as Map<String, dynamic>);
       }
-      final user = await widget.api.login(email.text.trim(), password.text);
-      if (mounted) widget.onAuthenticated(user);
     } on ApiException catch (error) {
       if (mounted) showMessage(context, error.message);
     } finally {
@@ -220,8 +257,93 @@ class _AuthPageState extends State<AuthPage> {
     }
   }
 
+  Widget buildChallenge() {
+    final activeChallenge = challenge!;
+    final options = activeChallenge['options'] as List<dynamic>;
+    return Scaffold(
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 520),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const _BrandMark(),
+                const SizedBox(height: 32),
+                const Text(
+                  'Security onboarding',
+                  style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Your account was approved. Complete this randomly selected defensive security scenario to activate it. This knowledge check is not identity verification or multi-factor authentication.',
+                  style: TextStyle(color: Colors.white60, height: 1.5),
+                ),
+                const SizedBox(height: 20),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(18),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          activeChallenge['question'] as String,
+                          style: const TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        ...options.map((item) {
+                          final option = item as Map<String, dynamic>;
+                          return RadioListTile<String>(
+                            value: option['id'] as String,
+                            groupValue: selectedOption,
+                            onChanged: busy
+                                ? null
+                                : (value) => setState(() => selectedOption = value),
+                            title: Text(option['text'] as String),
+                            contentPadding: EdgeInsets.zero,
+                          );
+                        }),
+                        const SizedBox(height: 12),
+                        FilledButton(
+                          onPressed: busy || selectedOption == null ? null : submit,
+                          child: busy
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Text('Submit answer'),
+                        ),
+                        TextButton(
+                          onPressed: busy
+                              ? null
+                              : () => setState(() {
+                                    challenge = null;
+                                    challengeToken = null;
+                                    selectedOption = null;
+                                  }),
+                          child: const Text('Back to sign in'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
-  Widget build(BuildContext context) => Scaffold(
+  Widget build(BuildContext context) {
+    if (challenge != null) return buildChallenge();
+    return Scaffold(
         body: Center(
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(24),
@@ -376,6 +498,7 @@ class _AuthPageState extends State<AuthPage> {
           ),
         ),
       );
+  }
 }
 
 class MainShell extends StatefulWidget {
@@ -917,6 +1040,23 @@ class _AdminPageState extends State<AdminPage> {
     }
   }
 
+  Future<void> reviewUser(
+    Map<String, dynamic> user,
+    String decision,
+  ) async {
+    final id = user['id'] as int;
+    try {
+      await widget.api.request(
+        'POST',
+        '/v1/admin/users/$id/review',
+        body: {'decision': decision},
+      );
+      await refresh();
+    } on ApiException catch (exception) {
+      if (mounted) showMessage(context, exception.message);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final counts = overview?['counts'] as Map<String, dynamic>?;
@@ -982,6 +1122,7 @@ class _AdminPageState extends State<AdminPage> {
             final user = item as Map<String, dynamic>;
             final isSelf = user['id'] == widget.currentUser['id'];
             final active = user['is_active'] as bool;
+            final accountStatus = user['account_status'] as String;
             return Card(
               child: ListTile(
                 leading: CircleAvatar(
@@ -996,14 +1137,56 @@ class _AdminPageState extends State<AdminPage> {
                 ),
                 title: Text(user['username'] as String),
                 subtitle: Text(
-                  '${user['role']} · ${active ? 'Active' : 'Disabled'}',
+                  '${user['role']} · ${accountStatus.replaceAll('_', ' ')}',
                 ),
                 trailing: isSelf
                     ? const Text('You', style: TextStyle(color: mint))
-                    : Switch(
-                        value: active,
-                        onChanged: (_) => changeStatus(user),
-                      ),
+                    : accountStatus == 'pending_review'
+                        ? Wrap(
+                            spacing: 2,
+                            children: [
+                              IconButton(
+                                tooltip: 'Approve applicant',
+                                onPressed: loading
+                                    ? null
+                                    : () => reviewUser(user, 'approve'),
+                                icon: const Icon(
+                                  Icons.check_circle_outline,
+                                  color: mint,
+                                ),
+                              ),
+                              IconButton(
+                                tooltip: 'Reject applicant',
+                                onPressed: loading
+                                    ? null
+                                    : () => reviewUser(user, 'reject'),
+                                icon: const Icon(
+                                  Icons.cancel_outlined,
+                                  color: Colors.orange,
+                                ),
+                              ),
+                            ],
+                          )
+                        : accountStatus == 'challenge_required'
+                            ? IconButton(
+                                tooltip: 'Revoke approval',
+                                onPressed: loading
+                                    ? null
+                                    : () => reviewUser(user, 'reject'),
+                                icon: const Icon(
+                                  Icons.block_outlined,
+                                  color: Colors.orange,
+                                ),
+                              )
+                            : accountStatus == 'active' ||
+                                    accountStatus == 'disabled'
+                                ? Switch(
+                                    value: active,
+                                    onChanged: loading
+                                        ? null
+                                        : (_) => changeStatus(user),
+                                  )
+                                : null,
               ),
             );
           }),
