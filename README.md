@@ -43,19 +43,26 @@ flutter pub get
 flutter run
 ```
 
-The default API address is `http://127.0.0.1:8000` (desktop/local). For an
-Android emulator, the app must use the host machine's emulator bridge:
+Start the backend before launching the app. The default API address is
+`http://127.0.0.1:8000` on desktop and `http://10.0.2.2:8000` on an Android
+emulator (the emulator's host-machine bridge).
 
 ```bash
-flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
 For a physical Android device, start the backend on a trusted local network
 using `uvicorn backend.main:app --host 0.0.0.0 --port 8000`, then set
 `API_BASE_URL` to the host machine's LAN address, such as
 `http://192.168.1.10:8000`. Allow the port through the host firewall as needed.
-The Android debug build permits HTTP for local development; use HTTPS for any
-non-local deployment.
+Start Flutter in a separate terminal with that address:
+
+```bash
+flutter run --dart-define=API_BASE_URL=http://192.168.1.10:8000
+```
+
+The Android debug build permits HTTP for local development; use HTTPS for
+any non-local deployment.
 
 This app currently uses the FastAPI/SQLite backend described below; it does not
 include Firebase or Cloud Firestore configuration.

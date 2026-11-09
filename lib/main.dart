@@ -9,10 +9,15 @@ const navy = Color(0xFF07111F);
 const panel = Color(0xFF101F32);
 const blue = Color(0xFF43A5FF);
 const mint = Color(0xFF3DDBB1);
-const apiBaseUrl = String.fromEnvironment(
-  'API_BASE_URL',
-  defaultValue: 'http://127.0.0.1:8000',
-);
+const configuredApiBaseUrl = String.fromEnvironment('API_BASE_URL');
+
+String get apiBaseUrl {
+  if (configuredApiBaseUrl.isNotEmpty) return configuredApiBaseUrl;
+  return switch (defaultTargetPlatform) {
+    TargetPlatform.android => 'http://10.0.2.2:8000',
+    _ => 'http://127.0.0.1:8000',
+  };
+}
 
 class ApiException implements Exception {
   const ApiException(this.message);
@@ -62,8 +67,13 @@ class ApiClient {
       }
     } on ApiException {
       rethrow;
-    } catch (_) {
-      throw const ApiException('Could not reach the configured server.');
+    } catch (error) {
+      throw ApiException(
+        'Could not reach $uri. Start the API with '
+        '`python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000`. '
+        'For a physical device, use your computer LAN address in API_BASE_URL. '
+        'Details: $error',
+      );
     }
 
     dynamic payload;
