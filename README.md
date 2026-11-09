@@ -2,8 +2,9 @@
 
 CRYPTOSHIELD is an Android Flutter app using Firebase Authentication,
 Cloud Firestore, App Check, and trusted Cloud Functions. Account registration,
-administrator approval, the onboarding challenge, and messaging use Firebase;
-the previous FastAPI/SQLite service is no longer used by the app.
+administrator approval, the onboarding challenge, messaging, and Analyzer/Lab
+history use Firebase. The previous FastAPI/SQLite service is no longer used by
+the app.
 
 ## Firebase project setup
 
@@ -75,8 +76,13 @@ requests cannot grant roles.
   minutes, are single-use, and have a five-attempt/15-minute cooldown.
 - Admin review, account status changes, and onboarding outcomes are recorded in
   the private `accountAuditLog` collection.
+- Analyzer samples/reports and Lab inputs/outputs are stored under the signed-in
+  user's `users/{uid}/toolHistory` collection. Each account can read its own
+  records; entries are limited to 20,000 characters per input and result, and
+  the screens show the 50 most recent entries by tool type.
 - Firestore rules deny direct client writes to account profiles, admin records,
-  and challenge records. Messaging is limited to active conversation members.
+  and challenge records. Tool history is limited to its owner and active
+  accounts; messaging is limited to active conversation members.
 - Firebase App Check is enforced on callable functions. Debug builds use the
   Android debug provider; release builds use Play Integrity.
 

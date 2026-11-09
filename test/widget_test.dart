@@ -7,6 +7,7 @@ import 'package:cryptoshield_ai/main.dart';
 class FakeCryptoShieldService implements CryptoShieldService {
   String? submittedChallengeToken;
   String? submittedOptionId;
+  final Map<String, List<Map<String, dynamic>>> toolHistory = {};
 
   @override
   Future<Map<String, dynamic>> adminOverview() async => {
@@ -43,6 +44,10 @@ class FakeCryptoShieldService implements CryptoShieldService {
   Future<List<Map<String, dynamic>>> getMessages(String email) async => [];
 
   @override
+  Future<List<Map<String, dynamic>>> getToolHistory(String kind) async =>
+      toolHistory[kind] ?? [];
+
+  @override
   Future<Map<String, dynamic>> login(String email, String password) async => {
         'status': 'challenge_required',
         'challenge_token': 'x' * 43,
@@ -69,6 +74,15 @@ class FakeCryptoShieldService implements CryptoShieldService {
 
   @override
   Future<void> sendMessage(String email, String content) async {}
+
+  @override
+  Future<void> saveToolRecord(String kind, String input, String result) async {
+    toolHistory.putIfAbsent(kind, () => []).add({
+      'input': input,
+      'result': result,
+      'created_at': 'now',
+    });
+  }
 
   @override
   Future<void> setUserActive(String userId, bool isActive) async {}
@@ -112,7 +126,8 @@ void main() {
       find.byType(TextFormField).at(0),
       'candidate@example.com',
     );
-    await tester.enterText(find.byType(TextFormField).at(1), 'StrongPassword123!');
+    await tester.enterText(
+        find.byType(TextFormField).at(1), 'StrongPassword123!');
     await tester.tap(find.text('Sign in'));
     await tester.pumpAndSettle();
 
@@ -127,5 +142,24 @@ void main() {
     expect(authenticatedUser?['id'], 'candidate-uid');
     expect(service.submittedChallengeToken, 'x' * 43);
     expect(service.submittedOptionId, 'deny-prompt-001');
+  });
+
+  testWidgets(
+      'analyzer saves submitted input and report before showing success', (
+    tester,
+  ) async {
+    final service = FakeCryptoShieldService();
+    await tester.pumpWidget(MaterialApp(home: AnalyzerPage(service: service)));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), '54657374');
+    await tester.tap(find.text('Analyze sample'));
+    await tester.pumpAndSettle();
+
+    final saved = service.toolHistory['analysis']!.single;
+    expect(saved['input'], '54657374');
+    expect(saved['result'], contains('Hexadecimal-like: Yes'));
+    expect(find.textContaining('PRELIMINARY FORMAT REPORT'), findsOneWidget);
+    expect(find.text('Saved analyses'), findsOneWidget);
   });
 }

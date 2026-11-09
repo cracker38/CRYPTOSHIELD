@@ -26,6 +26,8 @@ abstract interface class CryptoShieldService {
   Future<void> logout();
   Future<List<Map<String, dynamic>>> getMessages(String email);
   Future<void> sendMessage(String email, String content);
+  Future<List<Map<String, dynamic>>> getToolHistory(String kind);
+  Future<void> saveToolRecord(String kind, String input, String result);
   Future<Map<String, dynamic>> adminOverview();
   Future<void> reviewUser(String userId, String decision);
   Future<void> setUserActive(String userId, bool isActive);
@@ -56,9 +58,11 @@ class FirebaseService implements CryptoShieldService {
       }
       return Map<String, dynamic>.from(result.data! as Map);
     } on FirebaseFunctionsException catch (error) {
-      throw ApiException(error.message ?? 'Firebase request failed (${error.code}).');
+      throw ApiException(
+          error.message ?? 'Firebase request failed (${error.code}).');
     } on FirebaseException catch (error) {
-      throw ApiException(error.message ?? 'Firebase request failed (${error.code}).');
+      throw ApiException(
+          error.message ?? 'Firebase request failed (${error.code}).');
     }
   }
 
@@ -109,12 +113,14 @@ class FirebaseService implements CryptoShieldService {
       );
       var user = credential.user;
       if (user == null) {
-        throw const ApiException('Firebase could not load the signed-in account.');
+        throw const ApiException(
+            'Firebase could not load the signed-in account.');
       }
       await user.reload();
       user = _auth.currentUser;
       if (user == null) {
-        throw const ApiException('Firebase sign-in expired. Please sign in again.');
+        throw const ApiException(
+            'Firebase sign-in expired. Please sign in again.');
       }
       if (!user.emailVerified) {
         await user.sendEmailVerification();
@@ -172,7 +178,8 @@ class FirebaseService implements CryptoShieldService {
       throw ApiException(error.message ?? 'Sign-in failed (${error.code}).');
     } on FirebaseException catch (error) {
       await _auth.signOut();
-      throw ApiException(error.message ?? 'Firebase sign-in failed (${error.code}).');
+      throw ApiException(
+          error.message ?? 'Firebase sign-in failed (${error.code}).');
     }
   }
 
@@ -181,9 +188,8 @@ class FirebaseService implements CryptoShieldService {
     String challengeToken,
     String optionId,
   ) async {
-    final Map<String, dynamic> result;
     try {
-      result = await _call('answerOnboarding', {
+      return await _call('answerOnboarding', {
         'challengeToken': challengeToken,
         'optionId': optionId,
       });
@@ -191,15 +197,6 @@ class FirebaseService implements CryptoShieldService {
       await _auth.signOut();
       rethrow;
     }
-    final user = _auth.currentUser;
-    if (user == null) {
-      throw const ApiException('Sign in again before completing onboarding.');
-    }
-    final profile = await _firestore.collection('users').doc(user.uid).get();
-    return {
-      'status': result['status'],
-      'user': _userMap(user, profile.data() ?? const {}),
-    };
   }
 
   @override
@@ -216,7 +213,8 @@ class FirebaseService implements CryptoShieldService {
       }
       return _userMap(user, profile.data()!);
     } on FirebaseException catch (error) {
-      throw ApiException(error.message ?? 'Firebase profile check failed (${error.code}).');
+      throw ApiException(
+          error.message ?? 'Firebase profile check failed (${error.code}).');
     }
   }
 
@@ -238,7 +236,8 @@ class FirebaseService implements CryptoShieldService {
   }
 
   Future<String> _conversationId(String email) async {
-    final result = await _call('getOrCreateConversation', {'email': email.trim()});
+    final result =
+        await _call('getOrCreateConversation', {'email': email.trim()});
     return result['conversation_id'] as String;
   }
 
@@ -265,7 +264,8 @@ class FirebaseService implements CryptoShieldService {
         };
       }).toList();
     } on FirebaseException catch (error) {
-      throw ApiException(error.message ?? 'Firestore message read failed (${error.code}).');
+      throw ApiException(
+          error.message ?? 'Firestore message read failed (${error.code}).');
     }
   }
 
@@ -288,7 +288,74 @@ class FirebaseService implements CryptoShieldService {
         'createdAt': FieldValue.serverTimestamp(),
       });
     } on FirebaseException catch (error) {
-      throw ApiException(error.message ?? 'Firestore message write failed (${error.code}).');
+      throw ApiException(
+          error.message ?? 'Firestore message write failed (${error.code}).');
+    }
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> getToolHistory(String kind) async {
+    final user = _auth.currentUser;
+    if (user == null) {
+      throw const ApiException('Sign in to view your saved tool history.');
+    }
+    if (kind != 'analysis' && kind != 'lab') {
+      throw const ApiException('Tool history type is invalid.');
+    }
+    try {
+      final records = await _firestore
+          .collection('users')
+          .doc(user.uid)
+          .collection('toolHistory')
+          .where('kind', isEqualTo: kind)
+          .orderBy('createdAt', descending: true)
+          .limit(50)
+          .get();
+      return records.docs.map((document) {
+        final data = document.data();
+        final createdAt = data['createdAt'];
+        return {
+          'id': document.id,
+          'input': data['input'] as String,
+          'result': data['result'] as String,
+          'created_at': createdAt is Timestamp
+              ? createdAt.toDate().toIso8601String()
+              : '',
+        };
+      }).toList();
+    } on FirebaseException catch (error) {
+      throw ApiException(
+          error.message ?? 'Firestore history read failed (${error.code}).');
+    }
+  }
+
+  @override
+  Future<void> saveToolRecord(String kind, String input, String result) async {
+    final user = _auth.currentUser;
+    if (user == null) {
+      throw const ApiException('Sign in to save tool history.');
+    }
+    if ((kind != 'analysis' && kind != 'lab') ||
+        input.isEmpty ||
+        input.length > 20000 ||
+        result.isEmpty ||
+        result.length > 20000) {
+      throw const ApiException('Tool history entry is invalid or too large.');
+    }
+    try {
+      await _firestore
+          .collection('users')
+          .doc(user.uid)
+          .collection('toolHistory')
+          .add({
+        'kind': kind,
+        'input': input,
+        'result': result,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    } on FirebaseException catch (error) {
+      throw ApiException(
+          error.message ?? 'Firestore history write failed (${error.code}).');
     }
   }
 

@@ -21,6 +21,27 @@ service cloud.firestore {
     match /users/{userId} {
       allow get: if signedIn() && request.auth.uid == userId;
       allow list, create, update, delete: if false;
+
+      match /toolHistory/{entryId} {
+        allow get, list: if activeUser() && request.auth.uid == userId;
+        allow create: if activeUser()
+          && request.auth.uid == userId
+          && request.resource.data.keys().hasOnly([
+            'kind', 'input', 'result', 'createdAt'
+          ])
+          && request.resource.data.keys().hasAll([
+            'kind', 'input', 'result', 'createdAt'
+          ])
+          && request.resource.data.kind in ['analysis', 'lab']
+          && request.resource.data.input is string
+          && request.resource.data.input.size() > 0
+          && request.resource.data.input.size() <= 20000
+          && request.resource.data.result is string
+          && request.resource.data.result.size() > 0
+          && request.resource.data.result.size() <= 20000
+          && request.resource.data.createdAt == request.time;
+        allow update, delete: if false;
+      }
     }
 
     match /conversations/{conversationId} {

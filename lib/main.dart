@@ -17,6 +17,7 @@ const navy = Color(0xFF07111F);
 const panel = Color(0xFF101F32);
 const blue = Color(0xFF43A5FF);
 const mint = Color(0xFF3DDBB1);
+
 class CryptoShieldApp extends StatefulWidget {
   const CryptoShieldApp({this.service, super.key});
 
@@ -27,8 +28,7 @@ class CryptoShieldApp extends StatefulWidget {
 }
 
 class _CryptoShieldAppState extends State<CryptoShieldApp> {
-  late final CryptoShieldService service =
-      widget.service ?? FirebaseService();
+  late final CryptoShieldService service = widget.service ?? FirebaseService();
   Map<String, dynamic>? user;
   String? startupError;
 
@@ -163,11 +163,13 @@ class FirebaseUnavailableApp extends StatelessWidget {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.cloud_off_outlined, size: 48, color: Colors.orange),
+                    const Icon(Icons.cloud_off_outlined,
+                        size: 48, color: Colors.orange),
                     const SizedBox(height: 16),
                     const Text(
                       'Firebase is unavailable',
-                      style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800),
+                      style:
+                          TextStyle(fontSize: 24, fontWeight: FontWeight.w800),
                     ),
                     const SizedBox(height: 12),
                     Text(message, textAlign: TextAlign.center),
@@ -205,7 +207,8 @@ class FirebaseErrorPage extends StatelessWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.cloud_off_outlined, size: 44, color: Colors.orange),
+                const Icon(Icons.cloud_off_outlined,
+                    size: 44, color: Colors.orange),
                 const SizedBox(height: 12),
                 const Text('Could not verify your Firebase account.'),
                 const SizedBox(height: 8),
@@ -262,7 +265,9 @@ class _AuthPageState extends State<AuthPage> {
           challengeToken!,
           selectedOption!,
         );
-        if (mounted) widget.onAuthenticated(result['user'] as Map<String, dynamic>);
+        if (mounted) {
+          widget.onAuthenticated(result['user'] as Map<String, dynamic>);
+        }
       } else if (creatingAccount) {
         await widget.service.register(email.text.trim(), password.text);
         if (mounted) {
@@ -275,7 +280,8 @@ class _AuthPageState extends State<AuthPage> {
           );
         }
       } else {
-        final result = await widget.service.login(email.text.trim(), password.text);
+        final result =
+            await widget.service.login(email.text.trim(), password.text);
         if (result['status'] == 'challenge_required') {
           if (mounted) {
             setState(() {
@@ -286,7 +292,9 @@ class _AuthPageState extends State<AuthPage> {
           }
           return;
         }
-        if (mounted) widget.onAuthenticated(result['user'] as Map<String, dynamic>);
+        if (mounted) {
+          widget.onAuthenticated(result['user'] as Map<String, dynamic>);
+        }
       }
     } on ApiException catch (error) {
       if (mounted) showMessage(context, error.message);
@@ -352,12 +360,14 @@ class _AuthPageState extends State<AuthPage> {
                         ),
                         const SizedBox(height: 12),
                         FilledButton(
-                          onPressed: busy || selectedOption == null ? null : submit,
+                          onPressed:
+                              busy || selectedOption == null ? null : submit,
                           child: busy
                               ? const SizedBox(
                                   width: 20,
                                   height: 20,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                  child:
+                                      CircularProgressIndicator(strokeWidth: 2),
                                 )
                               : const Text('Submit answer'),
                         ),
@@ -387,160 +397,157 @@ class _AuthPageState extends State<AuthPage> {
   Widget build(BuildContext context) {
     if (challenge != null) return buildChallenge();
     return Scaffold(
-        body: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 460),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const _BrandMark(),
-                  const SizedBox(height: 32),
-                  Text(
-                    creatingAccount ? 'Create your account' : 'Welcome back',
-                    style: const TextStyle(
-                      fontSize: 30,
-                      fontWeight: FontWeight.w800,
-                    ),
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 460),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const _BrandMark(),
+                const SizedBox(height: 32),
+                Text(
+                  creatingAccount ? 'Create your account' : 'Welcome back',
+                  style: const TextStyle(
+                    fontSize: 30,
+                    fontWeight: FontWeight.w800,
                   ),
-                  const SizedBox(height: 8),
-                  Text(
-                    creatingAccount
-                        ? 'Start with your email and a strong password.'
-                        : 'Sign in to your security workspace.',
-                    style: const TextStyle(color: Colors.white60),
-                  ),
-                  const SizedBox(height: 24),
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(20),
-                      child: Form(
-                        key: formKey,
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            TextFormField(
-                              controller: email,
-                              keyboardType: TextInputType.emailAddress,
-                              autofillHints: const [AutofillHints.email],
-                              decoration: const InputDecoration(
-                                labelText: 'Email address',
-                                prefixIcon: Icon(Icons.alternate_email),
-                              ),
-                              validator: (value) {
-                                final trimmed = value?.trim() ?? '';
-                                return RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
-                                        .hasMatch(trimmed)
-                                    ? null
-                                    : 'Enter a valid email address.';
-                              },
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  creatingAccount
+                      ? 'Start with your email and a strong password.'
+                      : 'Sign in to your security workspace.',
+                  style: const TextStyle(color: Colors.white60),
+                ),
+                const SizedBox(height: 24),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Form(
+                      key: formKey,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          TextFormField(
+                            controller: email,
+                            keyboardType: TextInputType.emailAddress,
+                            autofillHints: const [AutofillHints.email],
+                            decoration: const InputDecoration(
+                              labelText: 'Email address',
+                              prefixIcon: Icon(Icons.alternate_email),
                             ),
+                            validator: (value) {
+                              final trimmed = value?.trim() ?? '';
+                              return RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+                                      .hasMatch(trimmed)
+                                  ? null
+                                  : 'Enter a valid email address.';
+                            },
+                          ),
+                          const SizedBox(height: 14),
+                          TextFormField(
+                            controller: password,
+                            obscureText: obscurePassword,
+                            autofillHints: creatingAccount
+                                ? const [AutofillHints.newPassword]
+                                : const [AutofillHints.password],
+                            decoration: InputDecoration(
+                              labelText: 'Password',
+                              prefixIcon: const Icon(Icons.lock_outline),
+                              suffixIcon: IconButton(
+                                onPressed: () => setState(
+                                  () => obscurePassword = !obscurePassword,
+                                ),
+                                icon: Icon(
+                                  obscurePassword
+                                      ? Icons.visibility_outlined
+                                      : Icons.visibility_off_outlined,
+                                ),
+                              ),
+                            ),
+                            validator: (value) {
+                              final length = value?.length ?? 0;
+                              if (creatingAccount && length < 12) {
+                                return 'Use at least 12 characters.';
+                              }
+                              if (length == 0) return 'Enter your password.';
+                              return null;
+                            },
+                          ),
+                          if (creatingAccount) ...[
                             const SizedBox(height: 14),
                             TextFormField(
-                              controller: password,
+                              controller: confirmation,
                               obscureText: obscurePassword,
-                              autofillHints: creatingAccount
-                                  ? const [AutofillHints.newPassword]
-                                  : const [AutofillHints.password],
-                              decoration: InputDecoration(
-                                labelText: 'Password',
-                                prefixIcon: const Icon(Icons.lock_outline),
-                                suffixIcon: IconButton(
-                                  onPressed: () => setState(
-                                    () => obscurePassword = !obscurePassword,
-                                  ),
-                                  icon: Icon(
-                                    obscurePassword
-                                        ? Icons.visibility_outlined
-                                        : Icons.visibility_off_outlined,
-                                  ),
-                                ),
+                              decoration: const InputDecoration(
+                                labelText: 'Confirm password',
+                                prefixIcon: Icon(Icons.verified_user_outlined),
                               ),
-                              validator: (value) {
-                                final length = value?.length ?? 0;
-                                if (creatingAccount && length < 12) {
-                                  return 'Use at least 12 characters.';
-                                }
-                                if (length == 0) return 'Enter your password.';
-                                return null;
-                              },
-                            ),
-                            if (creatingAccount) ...[
-                              const SizedBox(height: 14),
-                              TextFormField(
-                                controller: confirmation,
-                                obscureText: obscurePassword,
-                                decoration: const InputDecoration(
-                                  labelText: 'Confirm password',
-                                  prefixIcon:
-                                      Icon(Icons.verified_user_outlined),
-                                ),
-                                validator: (value) => value == password.text
-                                    ? null
-                                    : 'Passwords do not match.',
-                              ),
-                              const SizedBox(height: 12),
-                              const Text(
-                                'Use 12 or more characters. Your password is stored as a one-way hash.',
-                                style: TextStyle(
-                                  color: Colors.white54,
-                                  fontSize: 12,
-                                  height: 1.4,
-                                ),
-                              ),
-                            ],
-                            const SizedBox(height: 22),
-                            FilledButton(
-                              onPressed: busy ? null : submit,
-                              child: Padding(
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 12),
-                                child: busy
-                                    ? const SizedBox(
-                                        height: 20,
-                                        width: 20,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                        ),
-                                      )
-                                    : Text(
-                                        creatingAccount
-                                            ? 'Create account'
-                                            : 'Sign in',
-                                      ),
-                              ),
-                            ),
-                            TextButton(
-                              onPressed: busy
+                              validator: (value) => value == password.text
                                   ? null
-                                  : () => setState(
-                                        () =>
-                                            creatingAccount = !creatingAccount,
-                                      ),
-                              child: Text(
-                                creatingAccount
-                                    ? 'Already have an account? Sign in'
-                                    : 'New here? Create an account',
+                                  : 'Passwords do not match.',
+                            ),
+                            const SizedBox(height: 12),
+                            const Text(
+                              'Use 12 or more characters. Your password is stored as a one-way hash.',
+                              style: TextStyle(
+                                color: Colors.white54,
+                                fontSize: 12,
+                                height: 1.4,
                               ),
                             ),
                           ],
-                        ),
+                          const SizedBox(height: 22),
+                          FilledButton(
+                            onPressed: busy ? null : submit,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              child: busy
+                                  ? const SizedBox(
+                                      height: 20,
+                                      width: 20,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : Text(
+                                      creatingAccount
+                                          ? 'Create account'
+                                          : 'Sign in',
+                                    ),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: busy
+                                ? null
+                                : () => setState(
+                                      () => creatingAccount = !creatingAccount,
+                                    ),
+                            child: Text(
+                              creatingAccount
+                                  ? 'Already have an account? Sign in'
+                                  : 'New here? Create an account',
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  const Text(
-                    'Connects to your configured CRYPTOSHIELD server.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.white38, fontSize: 12),
-                  ),
-                ],
-              ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Connects securely to Firebase Authentication and Firestore.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white38, fontSize: 12),
+                ),
+              ],
             ),
           ),
         ),
-      );
+      ),
+    );
   }
 }
 
@@ -569,18 +576,18 @@ class _MainShellState extends State<MainShell> {
     final pages = <Widget>[
       HomePage(user: widget.user),
       MessagesPage(service: widget.service),
-      const AnalyzerPage(),
-      const LabPage(),
+      AnalyzerPage(service: widget.service),
+      LabPage(service: widget.service),
       if (isAdmin) AdminPage(service: widget.service, currentUser: widget.user),
       ProfilePage(
         user: widget.user,
         onSignOut: () async {
           try {
             await widget.service.logout();
+            widget.onSignOut();
           } on ApiException catch (error) {
             if (context.mounted) showMessage(context, error.message);
           }
-          widget.onSignOut();
         },
       ),
     ];
@@ -1230,7 +1237,9 @@ class _AdminPageState extends State<AdminPage> {
 }
 
 class AnalyzerPage extends StatefulWidget {
-  const AnalyzerPage({super.key});
+  const AnalyzerPage({required this.service, super.key});
+  final CryptoShieldService service;
+
   @override
   State<AnalyzerPage> createState() => _AnalyzerPageState();
 }
@@ -1238,11 +1247,59 @@ class AnalyzerPage extends StatefulWidget {
 class _AnalyzerPageState extends State<AnalyzerPage> {
   final input = TextEditingController();
   String? report;
+  List<Map<String, dynamic>> history = [];
+  String? historyError;
+  bool loadingHistory = true;
+  bool saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    loadHistory();
+  }
 
   @override
   void dispose() {
     input.dispose();
     super.dispose();
+  }
+
+  Future<void> loadHistory() async {
+    setState(() {
+      loadingHistory = true;
+      historyError = null;
+    });
+    try {
+      final records = await widget.service.getToolHistory('analysis');
+      if (mounted) setState(() => history = records);
+    } on ApiException catch (error) {
+      if (mounted) setState(() => historyError = error.message);
+    } finally {
+      if (mounted) setState(() => loadingHistory = false);
+    }
+  }
+
+  Future<void> saveAnalysis() async {
+    final sample = input.text;
+    if (sample.trim().isEmpty) {
+      showMessage(context, 'Enter a sample to analyze.');
+      return;
+    }
+    if (sample.length > 20000) {
+      showMessage(context, 'Samples must be 20,000 characters or fewer.');
+      return;
+    }
+    final analysisResult = analyze(sample);
+    setState(() => saving = true);
+    try {
+      await widget.service.saveToolRecord('analysis', sample, analysisResult);
+      if (mounted) setState(() => report = analysisResult);
+      await loadHistory();
+    } on ApiException catch (error) {
+      if (mounted) showMessage(context, error.message);
+    } finally {
+      if (mounted) setState(() => saving = false);
+    }
   }
 
   String analyze(String raw) {
@@ -1284,7 +1341,9 @@ class _AnalyzerPageState extends State<AnalyzerPage> {
               child: ListTile(
                 leading: Icon(Icons.shield_outlined, color: mint),
                 title: Text('Authorization first'),
-                subtitle: Text('Analyze only data you own or may examine.'),
+                subtitle: Text(
+                  'Analyze only data you own or may examine. Submitted samples and reports are saved in your private Firestore history.',
+                ),
               ),
             ),
             sectionTitle('Sample input'),
@@ -1300,9 +1359,10 @@ class _AnalyzerPageState extends State<AnalyzerPage> {
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
-                onPressed: () => setState(() => report = analyze(input.text)),
+                onPressed: saving ? null : saveAnalysis,
                 icon: const Icon(Icons.manage_search),
-                label: const Text('Analyze sample'),
+                label:
+                    Text(saving ? 'Saving to Firestore...' : 'Analyze sample'),
               ),
             ),
             if (report != null) ...[
@@ -1317,13 +1377,22 @@ class _AnalyzerPageState extends State<AnalyzerPage> {
                 ),
               ),
             ],
+            toolHistorySection(
+              title: 'Saved analyses',
+              records: history,
+              loading: loadingHistory,
+              error: historyError,
+              onRefresh: loadHistory,
+            ),
           ],
         ),
       );
 }
 
 class LabPage extends StatefulWidget {
-  const LabPage({super.key});
+  const LabPage({required this.service, super.key});
+  final CryptoShieldService service;
+
   @override
   State<LabPage> createState() => _LabPageState();
 }
@@ -1332,6 +1401,16 @@ class _LabPageState extends State<LabPage> {
   final input = TextEditingController();
   final shift = TextEditingController(text: '3');
   String result = '';
+  List<Map<String, dynamic>> history = [];
+  String? historyError;
+  bool loadingHistory = true;
+  bool saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    loadHistory();
+  }
 
   @override
   void dispose() {
@@ -1350,17 +1429,66 @@ class _LabPageState extends State<LabPage> {
         return code;
       }));
 
+  Future<void> loadHistory() async {
+    setState(() {
+      loadingHistory = true;
+      historyError = null;
+    });
+    try {
+      final records = await widget.service.getToolHistory('lab');
+      if (mounted) setState(() => history = records);
+    } on ApiException catch (error) {
+      if (mounted) setState(() => historyError = error.message);
+    } finally {
+      if (mounted) setState(() => loadingHistory = false);
+    }
+  }
+
+  Future<void> decodeExercise() async {
+    final text = input.text;
+    final amount = int.tryParse(shift.text);
+    if (text.trim().isEmpty) {
+      showMessage(context, 'Enter training ciphertext.');
+      return;
+    }
+    if (amount == null) {
+      showMessage(context, 'Enter a whole-number shift amount.');
+      return;
+    }
+    final savedInput = 'shift=$amount\n$text';
+    if (savedInput.length > 20000) {
+      showMessage(context, 'Training text must be 20,000 characters or fewer.');
+      return;
+    }
+    final decoded = caesar(text, amount);
+    setState(() => saving = true);
+    try {
+      await widget.service.saveToolRecord(
+        'lab',
+        savedInput,
+        decoded,
+      );
+      if (mounted) setState(() => result = decoded);
+      await loadHistory();
+    } on ApiException catch (error) {
+      if (mounted) showMessage(context, error.message);
+    } finally {
+      if (mounted) setState(() => saving = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) => PageFrame(
         title: 'Cryptography lab',
-        subtitle: 'Practice concepts with safe, local training exercises.',
+        subtitle:
+            'Practice concepts with safe training exercises saved to Firestore.',
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Card(
               child: ListTile(
                 leading: Icon(Icons.school_outlined, color: blue),
-                title: Text('Training sandbox'),
+                title: Text('Training sandbox · Firestore history'),
                 subtitle: Text(
                   'Classical ciphers are educational and cannot protect real information.',
                 ),
@@ -1385,11 +1513,9 @@ class _LabPageState extends State<LabPage> {
             SizedBox(
               width: double.infinity,
               child: FilledButton(
-                onPressed: () {
-                  final amount = int.tryParse(shift.text) ?? 3;
-                  setState(() => result = caesar(input.text, amount));
-                },
-                child: const Text('Decode exercise'),
+                onPressed: saving ? null : decodeExercise,
+                child:
+                    Text(saving ? 'Saving to Firestore...' : 'Decode exercise'),
               ),
             ),
             if (result.isNotEmpty)
@@ -1399,10 +1525,70 @@ class _LabPageState extends State<LabPage> {
                   child: SelectableText('Training output: $result'),
                 ),
               ),
+            toolHistorySection(
+              title: 'Saved exercises',
+              records: history,
+              loading: loadingHistory,
+              error: historyError,
+              onRefresh: loadHistory,
+            ),
           ],
         ),
       );
 }
+
+Widget toolHistorySection({
+  required String title,
+  required List<Map<String, dynamic>> records,
+  required bool loading,
+  required String? error,
+  required VoidCallback onRefresh,
+}) =>
+    Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        sectionTitle(title, trailing: 'LATEST ${records.length}'),
+        if (loading) const LinearProgressIndicator(),
+        if (error != null)
+          Card(
+            child: ListTile(
+              title: Text(error),
+              trailing: IconButton(
+                onPressed: onRefresh,
+                icon: const Icon(Icons.refresh),
+              ),
+            ),
+          ),
+        if (!loading && error == null && records.isEmpty)
+          const Text(
+            'No saved entries yet.',
+            style: TextStyle(color: Colors.white54),
+          ),
+        ...records.map(
+          (record) => Card(
+            child: ExpansionTile(
+              title: Text(
+                record['created_at'] as String? ?? 'Saved entry',
+                style: const TextStyle(fontSize: 13),
+              ),
+              childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              expandedCrossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('INPUT',
+                    style: TextStyle(color: blue, fontSize: 11)),
+                const SizedBox(height: 4),
+                SelectableText(record['input'] as String),
+                const SizedBox(height: 12),
+                const Text('RESULT',
+                    style: TextStyle(color: mint, fontSize: 11)),
+                const SizedBox(height: 4),
+                SelectableText(record['result'] as String),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
 
 class ProfilePage extends StatelessWidget {
   const ProfilePage({
