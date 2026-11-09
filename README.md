@@ -14,6 +14,8 @@ client configuration, not a server credential.
 Before deploying, in the Firebase Console:
 
 1. Enable **Authentication → Email/Password**.
+   Set the Firebase password policy to require at least 12 characters and
+   enable email-enumeration protection.
 2. Create the default **Cloud Firestore** database in the region appropriate
    for your team. Database location cannot be changed after creation.
 3. Register the Android app (`com.example.cryptoshield_ai`) in **App Check**.
@@ -23,6 +25,9 @@ Before deploying, in the Firebase Console:
    tokens are only for development; run a debug build, copy the generated
    token from the device logs, and register it in **App Check → Manage debug
    tokens**. Never ship a debug token in a release build.
+5. Before release, restrict the Android API key to this package/signing
+   certificate, review Firebase Auth email templates, and configure monitoring
+   and budget alerts.
 
 Install Flutter and the Firebase CLI, sign in, and deploy the rules and
 functions from the repository root:
@@ -34,6 +39,10 @@ npm run build --prefix functions
 firebase login
 firebase deploy --only firestore:rules,firestore:indexes,functions
 ```
+
+Functions use enforced App Check. Verify the debug App Check token is registered
+before testing registration or admin actions; otherwise those callable
+operations are intentionally rejected.
 
 The app checks both App Check and the Firestore-backed `healthCheck` callable
 on startup and fails closed with a retryable error if Firebase is unavailable.

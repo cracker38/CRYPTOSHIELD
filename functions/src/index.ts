@@ -429,8 +429,12 @@ export const reviewUser = onCall(
     if (profile.get("role") === "admin") {
       throw new HttpsError("failed-precondition", "Administrator accounts cannot be reviewed.");
     }
-    if (profile.get("accountStatus") !== "pending_review") {
-      throw new HttpsError("failed-precondition", "This account is not awaiting review.");
+    const currentStatus = profile.get("accountStatus");
+    const allowedStatuses = decision === "approve"
+      ? ["pending_review"]
+      : ["pending_review", "challenge_required"];
+    if (!allowedStatuses.includes(currentStatus)) {
+      throw new HttpsError("failed-precondition", "This account cannot be changed through applicant review.");
     }
     const authUser = await auth.getUser(userId);
     if (decision === "approve" && !authUser.emailVerified) {
@@ -441,7 +445,11 @@ export const reviewUser = onCall(
     await recordAudit(
       admin.uid,
       userId,
-      decision === "approve" ? "registration_approved" : "registration_rejected",
+      decision === "approve"
+        ? "registration_approved"
+        : currentStatus === "pending_review"
+          ? "registration_rejected"
+          : "approval_revoked",
     );
     return { id: userId, username: profile.get("email"), account_status: accountStatus };
   },
