@@ -1,35 +1,86 @@
-import 'dart:convert';
-import 'dart:io';
-
-import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:cryptoshield_ai/firebase_service.dart';
 import 'package:cryptoshield_ai/main.dart';
 
+class FakeCryptoShieldService implements CryptoShieldService {
+  String? submittedChallengeToken;
+  String? submittedOptionId;
+
+  @override
+  Future<Map<String, dynamic>> adminOverview() async => {
+        'counts': {
+          'users': 0,
+          'active_users': 0,
+          'conversations': 0,
+          'messages': 0,
+        },
+        'users': <Map<String, dynamic>>[],
+      };
+
+  @override
+  Future<Map<String, dynamic>> answerChallenge(
+    String challengeToken,
+    String optionId,
+  ) async {
+    submittedChallengeToken = challengeToken;
+    submittedOptionId = optionId;
+    return {
+      'status': 'logged_in',
+      'user': {
+        'id': 'candidate-uid',
+        'username': 'candidate@example.com',
+        'role': 'user',
+      },
+    };
+  }
+
+  @override
+  Future<void> checkHealth() async {}
+
+  @override
+  Future<List<Map<String, dynamic>>> getMessages(String email) async => [];
+
+  @override
+  Future<Map<String, dynamic>> login(String email, String password) async => {
+        'status': 'challenge_required',
+        'challenge_token': 'x' * 43,
+        'challenge': {
+          'question': 'What is the safe response to an unexpected MFA prompt?',
+          'options': [
+            {'id': 'deny-prompt-001', 'text': 'Deny it and report it.'},
+            {'id': 'approve-001', 'text': 'Approve it to stop notifications.'},
+          ],
+        },
+      };
+
+  @override
+  Future<void> logout() async {}
+
+  @override
+  Future<void> register(String email, String password) async {}
+
+  @override
+  Future<Map<String, dynamic>?> restoreUser() async => null;
+
+  @override
+  Future<void> reviewUser(String userId, String decision) async {}
+
+  @override
+  Future<void> sendMessage(String email, String content) async {}
+
+  @override
+  Future<void> setUserActive(String userId, bool isActive) async {}
+}
+
 void main() {
-  test('reports the configured API URL when the server is unreachable', () {
-    final api = ApiClient(
-      client: MockClient((_) => throw const SocketException('connection refused')),
-    );
-
-    expect(
-      api.request('GET', '/health'),
-      throwsA(
-        isA<ApiException>().having(
-          (error) => error.message,
-          'message',
-          allOf(contains(apiBaseUrl), contains('Start the API')),
-        ),
-      ),
-    );
-  });
-
   testWidgets('starts with account sign-in and account creation', (
     tester,
   ) async {
-    await tester.pumpWidget(const CryptoShieldApp());
+    await tester.pumpWidget(
+      CryptoShieldApp(service: FakeCryptoShieldService()),
+    );
+    await tester.pumpAndSettle();
 
     expect(find.text('Welcome back'), findsOneWidget);
     expect(find.text('Sign in'), findsOneWidget);
@@ -45,40 +96,13 @@ void main() {
   testWidgets('approved applicant must pass the challenge before sign-in', (
     tester,
   ) async {
-    final api = ApiClient(
-      client: MockClient((request) async {
-        if (request.url.path == '/v1/login') {
-          return httpResponse({
-            'status': 'challenge_required',
-            'challenge_token': 'x' * 43,
-            'challenge': {
-              'question': 'What is the safe response to an unexpected MFA prompt?',
-              'options': [
-                {'id': 'deny-prompt-001', 'text': 'Deny it and report it.'},
-                {'id': 'approve-001', 'text': 'Approve it to stop notifications.'},
-              ],
-            },
-          });
-        }
-        if (request.url.path == '/v1/onboarding/answer') {
-          final body = jsonDecode(request.body) as Map<String, dynamic>;
-          expect(body['challenge_token'], 'x' * 43);
-          expect(body['option_id'], 'deny-prompt-001');
-          return httpResponse({
-            'status': 'logged_in',
-            'token': 'session-token',
-            'user': {'id': 42, 'username': 'candidate@example.com', 'role': 'user'},
-          });
-        }
-        throw StateError('Unexpected API endpoint: ${request.url.path}');
-      }),
-    );
+    final service = FakeCryptoShieldService();
     Map<String, dynamic>? authenticatedUser;
 
     await tester.pumpWidget(
       MaterialApp(
         home: AuthPage(
-          api: api,
+          service: service,
           onAuthenticated: (user) => authenticatedUser = user,
         ),
       ),
@@ -99,13 +123,8 @@ void main() {
     await tester.tap(find.text('Submit answer'));
     await tester.pumpAndSettle();
 
-    expect(authenticatedUser?['id'], 42);
-    expect(api.token, 'session-token');
+    expect(authenticatedUser?['id'], 'candidate-uid');
+    expect(service.submittedChallengeToken, 'x' * 43);
+    expect(service.submittedOptionId, 'deny-prompt-001');
   });
 }
-
-http.Response httpResponse(Map<String, dynamic> body) => http.Response(
-      jsonEncode(body),
-      200,
-      headers: {'content-type': 'application/json'},
-    );

@@ -1,135 +1,50 @@
-import 'dart:convert';
-
-import 'package:flutter/foundation.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'firebase_service.dart';
 
-void main() => runApp(const CryptoShieldApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  try {
+    await initializeFirebase();
+    runApp(const FirebaseStartupGate());
+  } on FirebaseStartupException catch (error) {
+    runApp(FirebaseUnavailableApp(message: error.message));
+  }
+}
 
 const navy = Color(0xFF07111F);
 const panel = Color(0xFF101F32);
 const blue = Color(0xFF43A5FF);
 const mint = Color(0xFF3DDBB1);
-const configuredApiBaseUrl = String.fromEnvironment('API_BASE_URL');
-
-String get apiBaseUrl {
-  if (configuredApiBaseUrl.isNotEmpty) return configuredApiBaseUrl;
-  return switch (defaultTargetPlatform) {
-    TargetPlatform.android => 'http://10.0.2.2:8000',
-    _ => 'http://127.0.0.1:8000',
-  };
-}
-
-class ApiException implements Exception {
-  const ApiException(this.message);
-  final String message;
-
-  @override
-  String toString() => message;
-}
-
-class ApiClient {
-  ApiClient({http.Client? client}) : _client = client ?? http.Client();
-
-  final http.Client _client;
-  String? token;
-
-  Future<dynamic> request(
-    String method,
-    String path, {
-    Map<String, Object?>? body,
-    bool authenticated = true,
-  }) async {
-    final uri = Uri.parse('$apiBaseUrl$path');
-    final headers = <String, String>{'Content-Type': 'application/json'};
-    if (authenticated && token != null) {
-      headers['Authorization'] = 'Bearer $token';
-    }
-
-    late final http.Response response;
-    try {
-      switch (method) {
-        case 'GET':
-          response = await _client.get(uri, headers: headers);
-        case 'POST':
-          response = await _client.post(
-            uri,
-            headers: headers,
-            body: jsonEncode(body ?? const {}),
-          );
-        case 'PATCH':
-          response = await _client.patch(
-            uri,
-            headers: headers,
-            body: jsonEncode(body ?? const {}),
-          );
-        default:
-          throw const ApiException('Unsupported API request.');
-      }
-    } on ApiException {
-      rethrow;
-    } catch (error) {
-      throw ApiException(
-        'Could not reach $uri. Start the API with '
-        '`python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000`. '
-        'For a physical device, use your computer LAN address in API_BASE_URL. '
-        'Details: $error',
-      );
-    }
-
-    dynamic payload;
-    try {
-      payload = response.body.isEmpty ? null : jsonDecode(response.body);
-    } on FormatException {
-      throw const ApiException('The server returned an invalid response.');
-    }
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      final detail = payload is Map ? payload['detail'] : null;
-      throw ApiException(
-        detail is String ? detail : 'Request failed (${response.statusCode}).',
-      );
-    }
-    return payload;
-  }
-
-  Future<Map<String, dynamic>> register(String email, String password) async =>
-      (await request(
-        'POST',
-        '/v1/register',
-        authenticated: false,
-        body: {'username': email, 'password': password},
-      )) as Map<String, dynamic>;
-
-  Future<Map<String, dynamic>> login(String email, String password) async {
-    token = null;
-    final result = await request(
-      'POST',
-      '/v1/login',
-      authenticated: false,
-      body: {'username': email, 'password': password},
-    ) as Map<String, dynamic>;
-    if (result['status'] == 'logged_in') {
-      token = result['token'] as String;
-    }
-    return result;
-  }
-
-  Future<void> logout() async {
-    if (token != null) await request('POST', '/v1/logout');
-    token = null;
-  }
-}
-
 class CryptoShieldApp extends StatefulWidget {
-  const CryptoShieldApp({super.key});
+  const CryptoShieldApp({this.service, super.key});
+
+  final CryptoShieldService? service;
 
   @override
   State<CryptoShieldApp> createState() => _CryptoShieldAppState();
 }
 
 class _CryptoShieldAppState extends State<CryptoShieldApp> {
-  final api = ApiClient();
+  late final CryptoShieldService service =
+      widget.service ?? FirebaseService();
   Map<String, dynamic>? user;
+  String? startupError;
+
+  @override
+  void initState() {
+    super.initState();
+    _restoreUser();
+  }
+
+  Future<void> _restoreUser() async {
+    try {
+      final restoredUser = await service.restoreUser();
+      if (mounted) setState(() => user = restoredUser);
+    } on ApiException catch (error) {
+      if (mounted) setState(() => startupError = error.message);
+    }
+  }
 
   @override
   Widget build(BuildContext context) => MaterialApp(
@@ -163,27 +78,149 @@ class _CryptoShieldAppState extends State<CryptoShieldApp> {
             ),
           ),
         ),
-        home: user == null
-            ? AuthPage(
-                api: api,
-                onAuthenticated: (value) => setState(() => user = value),
-              )
-            : MainShell(
-                api: api,
-                user: user!,
-                onSignOut: () => setState(() => user = null),
+        home: startupError != null
+            ? FirebaseErrorPage(message: startupError!, onRetry: _restoreUser)
+            : user == null
+                ? AuthPage(
+                    service: service,
+                    onAuthenticated: (value) => setState(() => user = value),
+                  )
+                : MainShell(
+                    service: service,
+                    user: user!,
+                    onSignOut: () => setState(() => user = null),
+                  ),
+      );
+}
+
+class FirebaseStartupGate extends StatefulWidget {
+  const FirebaseStartupGate({super.key});
+
+  @override
+  State<FirebaseStartupGate> createState() => _FirebaseStartupGateState();
+}
+
+class _FirebaseStartupGateState extends State<FirebaseStartupGate> {
+  late Future<void> healthCheck;
+
+  @override
+  void initState() {
+    super.initState();
+    healthCheck = FirebaseService().checkHealth();
+  }
+
+  void retry() => setState(() => healthCheck = FirebaseService().checkHealth());
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<void>(
+        future: healthCheck,
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return FirebaseUnavailableApp(
+              message: snapshot.error is ApiException
+                  ? (snapshot.error! as ApiException).message
+                  : snapshot.error.toString(),
+              onRetry: retry,
+            );
+          }
+          if (snapshot.connectionState != ConnectionState.done) {
+            return const MaterialApp(
+              home: Scaffold(
+                body: Center(child: CircularProgressIndicator()),
               ),
+            );
+          }
+          return const CryptoShieldApp();
+        },
+      );
+}
+
+class FirebaseUnavailableApp extends StatelessWidget {
+  const FirebaseUnavailableApp({
+    required this.message,
+    this.onRetry,
+    super.key,
+  });
+
+  final String message;
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) => MaterialApp(
+        title: 'CRYPTOSHIELD',
+        home: Scaffold(
+          body: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 480),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.cloud_off_outlined, size: 48, color: Colors.orange),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Firebase is unavailable',
+                      style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(message, textAlign: TextAlign.center),
+                    if (onRetry != null) ...[
+                      const SizedBox(height: 20),
+                      FilledButton(
+                        onPressed: onRetry,
+                        child: const Text('Retry connection'),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+}
+
+class FirebaseErrorPage extends StatelessWidget {
+  const FirebaseErrorPage({
+    required this.message,
+    required this.onRetry,
+    super.key,
+  });
+
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.cloud_off_outlined, size: 44, color: Colors.orange),
+                const SizedBox(height: 12),
+                const Text('Could not verify your Firebase account.'),
+                const SizedBox(height: 8),
+                Text(message, textAlign: TextAlign.center),
+                const SizedBox(height: 16),
+                FilledButton(onPressed: onRetry, child: const Text('Retry')),
+              ],
+            ),
+          ),
+        ),
       );
 }
 
 class AuthPage extends StatefulWidget {
   const AuthPage({
-    required this.api,
+    required this.service,
     required this.onAuthenticated,
     super.key,
   });
 
-  final ApiClient api;
+  final CryptoShieldService service;
   final ValueChanged<Map<String, dynamic>> onAuthenticated;
 
   @override
@@ -215,30 +252,24 @@ class _AuthPageState extends State<AuthPage> {
     setState(() => busy = true);
     try {
       if (challenge != null) {
-        final result = await widget.api.request(
-          'POST',
-          '/v1/onboarding/answer',
-          authenticated: false,
-          body: {
-            'challenge_token': challengeToken,
-            'option_id': selectedOption,
-          },
-        ) as Map<String, dynamic>;
-        widget.api.token = result['token'] as String;
+        final result = await widget.service.answerChallenge(
+          challengeToken!,
+          selectedOption!,
+        );
         if (mounted) widget.onAuthenticated(result['user'] as Map<String, dynamic>);
       } else if (creatingAccount) {
-        await widget.api.register(email.text.trim(), password.text);
+        await widget.service.register(email.text.trim(), password.text);
         if (mounted) {
           setState(() => creatingAccount = false);
           password.clear();
           confirmation.clear();
           showMessage(
             context,
-            'Registration submitted. Sign in after an administrator reviews your request.',
+            'Check your email to verify your address. Your registration then awaits administrator review.',
           );
         }
       } else {
-        final result = await widget.api.login(email.text.trim(), password.text);
+        final result = await widget.service.login(email.text.trim(), password.text);
         if (result['status'] == 'challenge_required') {
           if (mounted) {
             setState(() {
@@ -278,7 +309,7 @@ class _AuthPageState extends State<AuthPage> {
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  'Your account was approved. Complete this randomly selected defensive security scenario to activate it. This knowledge check is not identity verification or multi-factor authentication.',
+                  'Your verified account was approved. Complete this randomly selected defensive security scenario to activate it. This knowledge check is not identity verification or multi-factor authentication.',
                   style: TextStyle(color: Colors.white60, height: 1.5),
                 ),
                 const SizedBox(height: 20),
@@ -509,13 +540,13 @@ class _AuthPageState extends State<AuthPage> {
 
 class MainShell extends StatefulWidget {
   const MainShell({
-    required this.api,
+    required this.service,
     required this.user,
     required this.onSignOut,
     super.key,
   });
 
-  final ApiClient api;
+  final CryptoShieldService service;
   final Map<String, dynamic> user;
   final VoidCallback onSignOut;
 
@@ -531,15 +562,15 @@ class _MainShellState extends State<MainShell> {
     final isAdmin = widget.user['role'] == 'admin';
     final pages = <Widget>[
       HomePage(user: widget.user),
-      MessagesPage(api: widget.api),
+      MessagesPage(service: widget.service),
       const AnalyzerPage(),
       const LabPage(),
-      if (isAdmin) AdminPage(api: widget.api, currentUser: widget.user),
+      if (isAdmin) AdminPage(service: widget.service, currentUser: widget.user),
       ProfilePage(
         user: widget.user,
         onSignOut: () async {
           try {
-            await widget.api.logout();
+            await widget.service.logout();
           } on ApiException catch (error) {
             if (context.mounted) showMessage(context, error.message);
           }
@@ -832,8 +863,8 @@ class HomePage extends StatelessWidget {
 }
 
 class MessagesPage extends StatefulWidget {
-  const MessagesPage({required this.api, super.key});
-  final ApiClient api;
+  const MessagesPage({required this.service, super.key});
+  final CryptoShieldService service;
 
   @override
   State<MessagesPage> createState() => _MessagesPageState();
@@ -861,14 +892,11 @@ class _MessagesPageState extends State<MessagesPage> {
     }
     setState(() => busy = true);
     try {
-      final result = await widget.api.request(
-        'GET',
-        '/v1/messages?with=${Uri.encodeQueryComponent(email)}',
-      ) as List<dynamic>;
+      final result = await widget.service.getMessages(email);
       if (!mounted) return;
       setState(() {
         activeRecipient = email;
-        messages = result.cast<Map<String, dynamic>>();
+        messages = result;
       });
     } on ApiException catch (error) {
       if (mounted) showMessage(context, error.message);
@@ -886,11 +914,7 @@ class _MessagesPageState extends State<MessagesPage> {
     }
     setState(() => busy = true);
     try {
-      await widget.api.request(
-        'POST',
-        '/v1/messages',
-        body: {'recipient_username': email, 'content': text},
-      );
+      await widget.service.sendMessage(email, text);
       composer.clear();
       await loadMessages();
     } on ApiException catch (error) {
@@ -992,12 +1016,12 @@ class _MessagesPageState extends State<MessagesPage> {
 
 class AdminPage extends StatefulWidget {
   const AdminPage({
-    required this.api,
+    required this.service,
     required this.currentUser,
     super.key,
   });
 
-  final ApiClient api;
+  final CryptoShieldService service;
   final Map<String, dynamic> currentUser;
 
   @override
@@ -1021,8 +1045,7 @@ class _AdminPageState extends State<AdminPage> {
       error = null;
     });
     try {
-      final result = await widget.api.request('GET', '/v1/admin/overview')
-          as Map<String, dynamic>;
+      final result = await widget.service.adminOverview();
       if (mounted) setState(() => overview = result);
     } on ApiException catch (exception) {
       if (mounted) setState(() => error = exception.message);
@@ -1032,14 +1055,10 @@ class _AdminPageState extends State<AdminPage> {
   }
 
   Future<void> changeStatus(Map<String, dynamic> user) async {
-    final id = user['id'] as int;
+    final id = user['id'] as String;
     final isActive = user['is_active'] as bool;
     try {
-      await widget.api.request(
-        'PATCH',
-        '/v1/admin/users/$id',
-        body: {'is_active': !isActive},
-      );
+      await widget.service.setUserActive(id, !isActive);
       await refresh();
     } on ApiException catch (exception) {
       if (mounted) showMessage(context, exception.message);
@@ -1050,13 +1069,9 @@ class _AdminPageState extends State<AdminPage> {
     Map<String, dynamic> user,
     String decision,
   ) async {
-    final id = user['id'] as int;
+    final id = user['id'] as String;
     try {
-      await widget.api.request(
-        'POST',
-        '/v1/admin/users/$id/review',
-        body: {'decision': decision},
-      );
+      await widget.service.reviewUser(id, decision);
       await refresh();
     } on ApiException catch (exception) {
       if (mounted) showMessage(context, exception.message);
