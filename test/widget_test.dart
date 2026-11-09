@@ -149,7 +149,11 @@ void main() {
     tester,
   ) async {
     final service = FakeCryptoShieldService();
-    await tester.pumpWidget(MaterialApp(home: AnalyzerPage(service: service)));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: AnalyzerPage(service: service)),
+      ),
+    );
     await tester.pumpAndSettle();
 
     await tester.enterText(find.byType(TextField), '54657374');
