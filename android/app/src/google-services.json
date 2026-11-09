@@ -1,0 +1,40 @@
+{
+  "project_info": {
+    "project_number": "116373160337",
+    "firebase_url": "https://cryptoshell-a5beb-default-rtdb.firebaseio.com",
+    "project_id": "cryptoshell-a5beb",
+    "storage_bucket": "cryptoshell-a5beb.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:116373160337:android:4b42dd42b571bd5b8d9a30",
+        "android_client_info": {
+          "package_name": "com.example.cryptoshield_ai"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "116373160337-p90odqnul5ktsi6gq2o2fhb29af8altm.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCHpewzIxgB_tT0i54z4ysEW2etlwVzeNw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "116373160337-p90odqnul5ktsi6gq2o2fhb29af8altm.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
