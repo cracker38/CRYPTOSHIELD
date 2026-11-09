@@ -1,110 +1,102 @@
 # CRYPTOSHIELD
 
-CRYPTOSHIELD is a Flutter security workspace backed by a FastAPI service. It
-provides account registration and sign-in, role-protected account
-administration, server-persisted messaging, local sample triage and a local
-classical-cipher training exercise.
+CRYPTOSHIELD is an Android Flutter app using Firebase Authentication,
+Cloud Firestore, App Check, and trusted Cloud Functions. Account registration,
+administrator approval, the onboarding challenge, and messaging use Firebase;
+the previous FastAPI/SQLite service is no longer used by the app.
 
-## Run the backend
+## Firebase project setup
 
-Use Python 3.10+ and install the dependencies:
+The Android client is configured for the `cryptoshell-a5beb` Firebase project.
+Keep `android/app/src/google-services.json` in place locally. It contains
+client configuration, not a server credential.
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r backend/requirements.txt
-```
+Before deploying, in the Firebase Console:
 
-Configure the initial administrator through your shell or a secrets manager.
-The account is created the first time the backend starts with these values;
-the password is hashed and is not written to source code:
+1. Enable **Authentication → Email/Password**.
+2. Create the default **Cloud Firestore** database in the region appropriate
+   for your team. Database location cannot be changed after creation.
+3. Register the Android app (`com.example.cryptoshield_ai`) in **App Check**.
+   Configure **Play Integrity** for release builds. Add your release signing
+   certificate SHA-256 fingerprint in Firebase/Play Console as required.
+4. Billing must be enabled for Cloud Functions deployment. App Check debug
+   tokens are only for development; run a debug build, copy the generated
+   token from the device logs, and register it in **App Check → Manage debug
+   tokens**. Never ship a debug token in a release build.
 
-```bash
-export ADMIN_EMAIL='it.elias38@gmail.com'
-export ADMIN_PASSWORD='choose-a-unique-password-of-at-least-12-characters'
-uvicorn backend.main:app --host 127.0.0.1 --port 8000
-```
-
-Set both variables together. The bootstrap password must be at least 10
-characters; user-created accounts require at least 12. On startup, an account matching `ADMIN_EMAIL` is
-granted the administrator role; if the account does not exist, it is created
-with `ADMIN_PASSWORD`. Keep the password in a secret manager and do not commit
-it to the repository. New accounts require an email address and a password of
-at least 12 characters. Registration requests remain inactive until an
-administrator approves them. Approved applicants must pass a randomly
-selected, server-verified defensive security scenario before the first session
-is issued. Rejected, pending, and disabled accounts cannot sign in.
-
-Health check: `http://127.0.0.1:8000/health`
-
-## Run the Flutter app
-
-Install Flutter, fetch the packages and launch:
+Install Flutter and the Firebase CLI, sign in, and deploy the rules and
+functions from the repository root:
 
 ```bash
 flutter pub get
+npm ci --prefix functions
+npm run build --prefix functions
+firebase login
+firebase deploy --only firestore:rules,firestore:indexes,functions
+```
+
+The app checks both App Check and the Firestore-backed `healthCheck` callable
+on startup and fails closed with a retryable error if Firebase is unavailable.
+Cloud Functions run in `us-central1`.
+
+## Bootstrap the first administrator
+
+1. Create the administrator account under **Firebase Authentication** using
+   Email/Password and verify its email.
+2. Use Google Application Default Credentials for a trusted operator account
+   with Firebase Authentication and Firestore administration permissions. Do
+   not put a service-account key in this repository.
+3. Assign the admin custom claim and profile:
+
+```bash
+gcloud auth application-default login
+npm run set-admin --prefix functions -- admin@example.com
+```
+
+Sign out and back in after setting the custom claim. Admin operations require
+both the trusted `admin` custom claim and an active admin profile; client
+requests cannot grant roles.
+
+## Account and data lifecycle
+
+- New accounts use Firebase Authentication and must verify their email.
+- Registration requests are inactive until an administrator approves them.
+- An approved user must pass a random, server-verified defensive security
+  scenario before Firestore access is enabled. Challenges expire after ten
+  minutes, are single-use, and have a five-attempt/15-minute cooldown.
+- Admin review, account status changes, and onboarding outcomes are recorded in
+  the private `accountAuditLog` collection.
+- Firestore rules deny direct client writes to account profiles, admin records,
+  and challenge records. Messaging is limited to active conversation members.
+- Firebase App Check is enforced on callable functions. Debug builds use the
+  Android debug provider; release builds use Play Integrity.
+
+The challenge is a knowledge check, not identity verification, MFA, or proof
+of professional cybersecurity competence. Use a stronger team identity and
+access-management process for production.
+
+## Existing SQLite data
+
+The app no longer reads or writes `backend/cryptoshield.db`; that file is left
+untouched as a legacy copy. Existing SQLite password hashes cannot be moved
+directly into Firebase Authentication. Existing users must create and verify
+Firebase accounts, and old messages are not automatically migrated. Export
+and migrate old records only with an approved account-mapping and retention
+plan; do not copy credentials or service-account keys into the repository.
+
+## Run and validate
+
+```bash
 flutter run
+flutter analyze
+flutter test
 ```
 
-Start the backend before launching the app. The default API address is
-`http://127.0.0.1:8000` on desktop and `http://10.0.2.2:8000` on an Android
-emulator (the emulator's host-machine bridge).
+Firebase initialization is currently configured for Android only. Other
+platforms need their own Firebase app registration and generated Firebase
+options before being enabled.
 
-```bash
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
-```
-
-For a physical Android device, start the backend on a trusted local network
-using `uvicorn backend.main:app --host 0.0.0.0 --port 8000`, then set
-`API_BASE_URL` to the host machine's LAN address, such as
-`http://192.168.1.10:8000`. Allow the port through the host firewall as needed.
-Start Flutter in a separate terminal with that address:
-
-```bash
-flutter run --dart-define=API_BASE_URL=http://192.168.1.10:8000
-```
-
-The Android debug build permits HTTP for local development; use HTTPS for
-any non-local deployment.
-
-This app currently uses the FastAPI/SQLite backend described below; it does not
-include Firebase or Cloud Firestore configuration.
-
-## API capabilities
-
-- `POST /v1/register`, `POST /v1/login`, `GET /v1/me`, `POST /v1/logout`
-- `POST /v1/onboarding/answer` for an approved user's short-lived challenge
-- `GET /v1/conversations`, `POST /v1/conversations`
-- `GET /v1/messages`, `POST /v1/messages`
-- Administrator-only `GET /v1/admin/overview`
-- Administrator-only `POST /v1/admin/users/{id}/review` to approve or reject
-  registration requests
-- Administrator-only `PATCH /v1/admin/users/{id}` to disable or re-enable an account
-
-Run backend tests from the repository root with `python -m pytest`.
-
-## Security boundaries
-
-This is an operational starter, not a production-ready secure messenger.
-Message bodies are encrypted in the SQLite database using a server-managed
-key, but this is **not end-to-end encryption**: the server can decrypt
-messages. Do not send sensitive or confidential content. The login token is
-held in memory by the app and is cleared on sign-out.
-
-Before handling real secrets or deploying publicly:
-
-1. Use TLS, production-grade secret management, backups, monitoring and
-   database access controls.
-2. Move from SQLite to a managed database and add comprehensive rate limiting,
-   account recovery, email verification, audit monitoring and stronger session
-   lifecycle controls.
-3. Use a maintained, independently audited end-to-end encryption protocol.
-   Do not invent a protocol or upload private keys.
-4. Add secure device storage, identity verification, forward secrecy,
-   attachment encryption, replay protection, threat modelling and independent
-   security testing.
-5. Keep analysis opt-in, authorized and separate from messaging.
-
-The onboarding scenario is a basic knowledge check, not identity verification,
-MFA, or proof of professional cybersecurity competence. Use a stronger
-identity and access-management process for a real security team.
+Firestore encrypts stored data at rest, but messages are **not end-to-end
+encrypted**: authorized clients can read conversation contents. Do not send
+sensitive or confidential material until the system has undergone independent
+security review and a suitable end-to-end protocol is implemented.

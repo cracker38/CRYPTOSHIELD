@@ -95,24 +95,26 @@ const scenarios = [
   },
 ];
 
-type CallableData = Record<string, unknown>;
-
 function requireAuth(authContext: {
   uid: string;
   token: Record<string, unknown>;
-} | null) {
+} | null | undefined) {
   if (!authContext) {
     throw new HttpsError("unauthenticated", "Sign in to continue.");
   }
   return authContext;
 }
 
-function requireAdmin(authContext: {
+async function requireAdmin(authContext: {
   uid: string;
   token: Record<string, unknown>;
-} | null) {
+} | null | undefined) {
   const current = requireAuth(authContext);
   if (current.token.admin !== true) {
+    throw new HttpsError("permission-denied", "Administrator access is required.");
+  }
+  const profile = await requireActiveProfile(current.uid);
+  if (profile.role !== "admin") {
     throw new HttpsError("permission-denied", "Administrator access is required.");
   }
   return current;
@@ -152,7 +154,7 @@ async function requireActiveProfile(uid: string) {
   return profile;
 }
 
-export const healthCheck = onCall({ region }, async () => {
+export const healthCheck = onCall({ region, enforceAppCheck: true }, async () => {
   await db.collection("_system").doc("health").set(
     { checkedAt: FieldValue.serverTimestamp() },
     { merge: true },
@@ -168,14 +170,15 @@ export const submitRegistration = onCall(
     if (!user.email) {
       throw new HttpsError("failed-precondition", "An email address is required.");
     }
+    const email = user.email;
 
     const profileRef = db.collection("users").doc(current.uid);
     await db.runTransaction(async (transaction) => {
       const profile = await transaction.get(profileRef);
       if (profile.exists) return;
       transaction.create(profileRef, {
-        email: user.email,
-        emailLower: user.email.toLowerCase(),
+        email,
+        emailLower: email.toLowerCase(),
         emailVerified: user.emailVerified,
         role: "user",
         accountStatus: "pending_review",
@@ -286,7 +289,9 @@ export const answerOnboarding = onCall(
     const challengeRef = db.collection("onboardingChallenges").doc(tokenHash(challengeToken));
     const profileRef = db.collection("users").doc(current.uid);
     const now = Timestamp.now();
-    let outcome: "correct" | "incorrect" | "limited" | "invalid" = "invalid";
+    const result: { outcome: "correct" | "incorrect" | "limited" | "invalid" } = {
+      outcome: "invalid",
+    };
     await db.runTransaction(async (transaction) => {
       const [challengeSnapshot, profileSnapshot] = await Promise.all([
         transaction.get(challengeRef),
@@ -301,12 +306,12 @@ export const answerOnboarding = onCall(
         !profile ||
         profile.accountStatus !== "challenge_required"
       ) {
-        outcome = "invalid";
+        result.outcome = "invalid";
         return;
       }
       if ((challenge.expiresAt as Timestamp).toMillis() <= now.toMillis()) {
         transaction.update(challengeRef, { consumed: true });
-        outcome = "invalid";
+        result.outcome = "invalid";
         return;
       }
 
@@ -316,7 +321,7 @@ export const answerOnboarding = onCall(
         attempts = 0;
       }
       if (attempts >= attemptLimit) {
-        outcome = "limited";
+        result.outcome = "limited";
         return;
       }
 
@@ -333,7 +338,7 @@ export const answerOnboarding = onCall(
           challengeAttempts: attempts,
           challengeWindowStartedAt: windowStartedAt ?? now,
         });
-        outcome = attempts >= attemptLimit ? "limited" : "incorrect";
+        result.outcome = attempts >= attemptLimit ? "limited" : "incorrect";
         return;
       }
 
@@ -345,15 +350,15 @@ export const answerOnboarding = onCall(
         challengeWindowStartedAt: FieldValue.delete(),
         activatedAt: FieldValue.serverTimestamp(),
       });
-      outcome = "correct";
+      result.outcome = "correct";
     });
 
-    if (outcome !== "correct") {
+    if (result.outcome !== "correct") {
       await recordAudit(null, current.uid, "challenge_failed");
-      if (outcome === "limited") {
+      if (result.outcome === "limited") {
         throw new HttpsError("resource-exhausted", "Too many attempts. Try again later.");
       }
-      if (outcome === "incorrect") {
+      if (result.outcome === "incorrect") {
         throw new HttpsError("invalid-argument", "That answer is incorrect. Request a new challenge.");
       }
       throw new HttpsError("unauthenticated", "Challenge is invalid, expired, or already used.");
@@ -377,7 +382,7 @@ export const answerOnboarding = onCall(
 export const adminOverview = onCall(
   { region, enforceAppCheck: true },
   async (request) => {
-    requireAdmin(request.auth);
+    await requireAdmin(request.auth);
     const [users, conversations, messages] = await Promise.all([
       db.collection("users").get(),
       db.collection("conversations").count().get(),
@@ -412,7 +417,7 @@ export const adminOverview = onCall(
 export const reviewUser = onCall(
   { region, enforceAppCheck: true },
   async (request) => {
-    const admin = requireAdmin(request.auth);
+    const admin = await requireAdmin(request.auth);
     const userId = request.data?.userId;
     const decision = request.data?.decision;
     if (typeof userId !== "string" || !["approve", "reject"].includes(decision)) {
@@ -445,7 +450,7 @@ export const reviewUser = onCall(
 export const setUserStatus = onCall(
   { region, enforceAppCheck: true },
   async (request) => {
-    const admin = requireAdmin(request.auth);
+    const admin = await requireAdmin(request.auth);
     const userId = request.data?.userId;
     const isActive = request.data?.isActive;
     if (typeof userId !== "string" || typeof isActive !== "boolean") {

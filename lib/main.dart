@@ -1,4 +1,5 @@
-import 'package:firebase_core/firebase_core.dart';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'firebase_service.dart';
 
@@ -40,7 +41,12 @@ class _CryptoShieldAppState extends State<CryptoShieldApp> {
   Future<void> _restoreUser() async {
     try {
       final restoredUser = await service.restoreUser();
-      if (mounted) setState(() => user = restoredUser);
+      if (mounted) {
+        setState(() {
+          startupError = null;
+          user = restoredUser;
+        });
+      }
     } on ApiException catch (error) {
       if (mounted) setState(() => startupError = error.message);
     }
@@ -851,7 +857,7 @@ class HomePage extends StatelessWidget {
               child: Padding(
                 padding: EdgeInsets.all(15),
                 child: Text(
-                  'Messages are encrypted in the server database, but are not end-to-end encrypted. Do not use this service for sensitive or confidential conversations.',
+                  'Messages use Firestore encryption at rest, but are not end-to-end encrypted. Do not use this service for sensitive or confidential conversations.',
                   style: TextStyle(
                       color: Colors.white60, fontSize: 12, height: 1.5),
                 ),
@@ -940,7 +946,7 @@ class _MessagesPageState extends State<MessagesPage> {
                     SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        'Messages are encrypted at rest by the server, not end-to-end encrypted.',
+                        'Messages are encrypted at rest by Firestore, not end-to-end encrypted.',
                         style: TextStyle(fontSize: 12, color: Colors.white70),
                       ),
                     ),

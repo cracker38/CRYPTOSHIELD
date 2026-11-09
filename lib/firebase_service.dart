@@ -4,6 +4,7 @@ import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 class ApiException implements Exception {
   const ApiException(this.message);
@@ -289,15 +290,29 @@ class FirebaseStartupException implements Exception {
 }
 
 Future<void> initializeFirebase() async {
+  if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+    throw const FirebaseStartupException(
+      'Firebase is currently configured for the Android app only.',
+    );
+  }
   try {
     await Firebase.initializeApp();
     await FirebaseAppCheck.instance.activate(
-      androidProvider:
-          kDebugMode ? AndroidProvider.debug : AndroidProvider.playIntegrity,
+      providerAndroid: kDebugMode
+          ? const AndroidDebugProvider()
+          : const AndroidPlayIntegrityProvider(),
     );
   } on FirebaseException catch (error) {
     throw FirebaseStartupException(
       error.message ?? 'Firebase initialization failed (${error.code}).',
+    );
+  } on PlatformException catch (error) {
+    throw FirebaseStartupException(
+      error.message ?? 'Firebase platform setup failed (${error.code}).',
+    );
+  } on MissingPluginException {
+    throw const FirebaseStartupException(
+      'Firebase Android plugins are missing. Rebuild the app after fetching packages.',
     );
   }
 }
