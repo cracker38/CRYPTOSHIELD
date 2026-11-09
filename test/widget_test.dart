@@ -94,6 +94,8 @@ void main() {
     expect(find.text('Security onboarding'), findsOneWidget);
     expect(authenticatedUser, isNull);
     await tester.tap(find.text('Deny it and report it.'));
+    await tester.ensureVisible(find.text('Submit answer'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Submit answer'));
     await tester.pumpAndSettle();
 

@@ -881,7 +881,6 @@ def set_user_status(
             )
         if not payload.is_active and target["account_status"] not in {
             "active",
-            "challenge_required",
             "disabled",
         }:
             raise HTTPException(status_code=409, detail="This account cannot be disabled in its current state.")
