@@ -1,81 +1,85 @@
-# CRYPTOSHIELD AI — Mobile Starter
+# CRYPTOSHIELD
 
-A Flutter mobile UI prototype and FastAPI sample-analysis starter for a secure communication and cryptographic intelligence platform.
+CRYPTOSHIELD is a Flutter security workspace backed by a FastAPI service. It
+provides account registration and sign-in, role-protected account
+administration, server-persisted messaging, local sample triage and a local
+classical-cipher training exercise.
 
-## Included in this starter
+## Run the backend
 
-- Flutter navigation shell and dark cybersecurity UI.
-- Home/security overview.
-- Demo messaging interface (explicitly **not encrypted**).
-- Local basic ciphertext-format triage (Base64/hex observations).
-- Caesar cipher educational exercise.
-- Investigation, profile and security-settings screens.
-- FastAPI `/health` and authorized `/v1/analyze` prototype endpoints.
+Use Python 3.10+ and install the dependencies:
 
-## Important security status
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+```
 
-This is a **prototype**, not a production secure messenger. Do not send real secrets or confidential conversations through the demo messaging screen. The UI does not implement end-to-end encryption, account authentication, secure key storage, persistent messaging, file encryption, or production-grade AI.
+Configure the initial administrator through your shell or a secrets manager.
+The account is created the first time the backend starts with these values;
+the password is hashed and is not written to source code:
 
-Before production:
-1. Integrate a maintained, independently audited end-to-end encryption protocol/library. Do not invent a protocol.
-2. Implement identity verification, prekey lifecycle, forward secrecy, replay protection, device revocation and secure backup.
-3. Keep private keys on user devices using platform secure storage; never upload users' private keys to the API.
-4. Add authentication, authorization, rate limiting, TLS, secure database access and secret management.
-5. Separate production messaging from the opt-in analysis workflow. Never silently expose message plaintext or keys to analysts.
-6. Add security review, threat modelling, penetration testing and dependency scanning.
+```bash
+export ADMIN_EMAIL='it.elias38@gmail.com'
+export ADMIN_PASSWORD='choose-a-unique-password-of-at-least-12-characters'
+uvicorn backend.main:app --host 127.0.0.1 --port 8000
+```
 
-## Run Flutter
+Set both variables together. On startup, an account matching `ADMIN_EMAIL` is
+granted the administrator role; if the account does not exist, it is created
+with `ADMIN_PASSWORD`. Keep the password in a secret manager and do not commit
+it to the repository. New accounts can be created from the app and require an
+email address and a password of at least 12 characters.
 
-Install Flutter and Android Studio, then from this directory:
+Health check: `http://127.0.0.1:8000/health`
+
+## Run the Flutter app
+
+Install Flutter, fetch the packages and launch:
 
 ```bash
 flutter pub get
 flutter run
 ```
 
-To build an Android APK:
+The default API address is `http://127.0.0.1:8000` (desktop/local). For an
+Android emulator, use the host machine's emulator bridge:
 
 ```bash
-flutter build apk --release
+flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000
 ```
 
-## Run backend
+For a physical device, set `API_BASE_URL` to the backend host reachable over
+your network. Use HTTPS for any non-local deployment.
 
-```bash
-cd backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
+## API capabilities
 
-Health check: `http://127.0.0.1:8000/health`
+- `POST /v1/register`, `POST /v1/login`, `GET /v1/me`, `POST /v1/logout`
+- `GET /v1/conversations`, `POST /v1/conversations`
+- `GET /v1/messages`, `POST /v1/messages`
+- Administrator-only `GET /v1/admin/overview`
+- Administrator-only `PATCH /v1/admin/users/{id}` to disable or re-enable an account
 
-Analyze a sample:
+Run backend tests from the repository root with `python -m pytest`.
 
-```bash
-curl -X POST http://127.0.0.1:8000/v1/analyze \
-  -H 'Content-Type: application/json' \
-  -d '{"sample":"U2FsdGVkX1+example","authorization_confirmed":true}'
-```
+## Security boundaries
 
-## Suggested production architecture
+This is an operational starter, not a production-ready secure messenger.
+Message bodies are encrypted in the SQLite database using a server-managed
+key, but this is **not end-to-end encryption**: the server can decrypt
+messages. Do not send sensitive or confidential content. The login token is
+held in memory by the app and is cleared on sign-out.
 
-- Mobile: Flutter
-- API: FastAPI
-- Database: PostgreSQL
-- Realtime delivery: WebSockets
-- Queue/cache: Redis
-- Attachments: encrypted object storage
-- Key management: platform secure storage + managed KMS/HSM for server-owned keys
-- Monitoring: OpenTelemetry, Prometheus and Grafana
+Before handling real secrets or deploying publicly:
 
-## Next engineering milestones
-
-1. Real authentication and account/device registration.
-2. Audited end-to-end messaging protocol.
-3. Persistent conversation and encrypted attachment services.
-4. Analysis job persistence, format plugins and explainable findings.
-5. Investigation case/evidence workflows with integrity hashes and audit trails.
-6. AI classification trained and evaluated on a curated, labelled dataset.
-7. Automated tests, threat model and independent security assessment.
+1. Use TLS, production-grade secret management, backups, monitoring and
+   database access controls.
+2. Move from SQLite to a managed database and add rate limiting, account
+   recovery, email verification, audit events and stronger session lifecycle
+   controls.
+3. Use a maintained, independently audited end-to-end encryption protocol.
+   Do not invent a protocol or upload private keys.
+4. Add secure device storage, identity verification, forward secrecy,
+   attachment encryption, replay protection, threat modelling and independent
+   security testing.
+5. Keep analysis opt-in, authorized and separate from messaging.
