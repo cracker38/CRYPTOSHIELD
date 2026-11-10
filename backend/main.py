@@ -12,6 +12,7 @@ from typing import Literal
 
 from cryptography.fernet import Fernet
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -25,6 +26,14 @@ app = FastAPI(
     title="CRYPTOSHIELD AI API",
     version="0.2.0",
     description="SQLite-backed registration, authentication, and encrypted one-to-one messaging APIs.",
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:5000"],
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 

@@ -177,6 +177,25 @@ def test_registration_rejects_weak_password_and_non_email(tmp_path, monkeypatch)
         assert invalid_email.status_code == 400
 
 
+def test_registration_cors_preflight_allows_local_flutter_origins(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DATABASE_PATH", str(tmp_path / "test.db"))
+    monkeypatch.delenv("ADMIN_EMAIL", raising=False)
+    monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
+
+    with TestClient(main.app) as client:
+        for origin in ("http://localhost:5000", "http://localhost:36325"):
+            response = client.options(
+                "/v1/register",
+                headers={
+                    "Origin": origin,
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "content-type",
+                },
+            )
+            assert response.status_code == 200
+            assert response.headers["access-control-allow-origin"] == origin
+
+
 def test_approval_challenge_rejects_wrong_answers_and_is_single_use(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "DATABASE_PATH", str(tmp_path / "test.db"))
     monkeypatch.setenv("ADMIN_EMAIL", "admin@example.com")
