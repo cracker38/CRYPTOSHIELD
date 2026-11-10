@@ -5,7 +5,7 @@ import 'api_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const ApiStartupGate());
+  runApp(const CryptoShieldApp());
 }
 
 const navy = Color(0xFF07111F);
@@ -92,97 +92,6 @@ class _CryptoShieldAppState extends State<CryptoShieldApp> {
                     user: user!,
                     onSignOut: () => setState(() => user = null),
                   ),
-      );
-}
-
-class ApiStartupGate extends StatefulWidget {
-  const ApiStartupGate({super.key});
-
-  @override
-  State<ApiStartupGate> createState() => _ApiStartupGateState();
-}
-
-class _ApiStartupGateState extends State<ApiStartupGate> {
-  late Future<void> healthCheck;
-
-  @override
-  void initState() {
-    super.initState();
-    healthCheck = ApiCryptoShieldService().checkHealth();
-  }
-
-  void retry() =>
-      setState(() => healthCheck = ApiCryptoShieldService().checkHealth());
-
-  @override
-  Widget build(BuildContext context) => FutureBuilder<void>(
-        future: healthCheck,
-        builder: (context, snapshot) {
-          if (snapshot.hasError) {
-            return ApiUnavailableApp(
-              message: snapshot.error is ApiException
-                  ? (snapshot.error! as ApiException).message
-                  : snapshot.error.toString(),
-              onRetry: retry,
-            );
-          }
-          if (snapshot.connectionState != ConnectionState.done) {
-            return const MaterialApp(
-              home: Scaffold(
-                body: Center(child: CircularProgressIndicator()),
-              ),
-            );
-          }
-          return const CryptoShieldApp();
-        },
-      );
-}
-
-class ApiUnavailableApp extends StatelessWidget {
-  const ApiUnavailableApp({
-    required this.message,
-    this.onRetry,
-    super.key,
-  });
-
-  final String message;
-  final VoidCallback? onRetry;
-
-  @override
-  Widget build(BuildContext context) => MaterialApp(
-        title: 'CRYPTOSHIELD',
-        home: Scaffold(
-          body: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 480),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.cloud_off_outlined,
-                        size: 48, color: Colors.orange),
-                    const SizedBox(height: 16),
-                    const Text(
-                      'CRYPTOSHIELD API is unavailable',
-                      style:
-                          TextStyle(fontSize: 24, fontWeight: FontWeight.w800),
-                    ),
-                    const SizedBox(height: 12),
-                    Text(message, textAlign: TextAlign.center),
-                    if (onRetry != null) ...[
-                      const SizedBox(height: 20),
-                      FilledButton(
-                        onPressed: onRetry,
-                        child: const Text('Retry connection'),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
       );
 }
 
