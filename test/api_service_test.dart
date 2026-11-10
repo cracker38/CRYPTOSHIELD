@@ -58,4 +58,36 @@ void main() {
       everyElement('Bearer stored-session-token'),
     );
   });
+
+  test('rejects remote API endpoints that do not use HTTPS', () async {
+    final client = CapturingClient();
+    final service = ApiCryptoShieldService(
+      client: client,
+      baseUri: Uri.parse('http://api.example.com'),
+    );
+
+    await expectLater(
+      service.checkHealth(),
+      throwsA(
+        isA<ApiException>().having(
+          (error) => error.message,
+          'message',
+          contains('HTTPS'),
+        ),
+      ),
+    );
+    expect(client.requests, isEmpty);
+  });
+
+  test('allows HTTPS API endpoints', () async {
+    final client = CapturingClient();
+    final service = ApiCryptoShieldService(
+      client: client,
+      baseUri: Uri.parse('https://api.example.com'),
+    );
+
+    await service.checkHealth();
+
+    expect(client.requests, hasLength(1));
+  });
 }

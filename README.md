@@ -95,11 +95,11 @@ flutter run -d <device-id> \
   --dart-define=CRYPTOSHIELD_API_URL=http://10.0.2.2:8000
 ```
 
-The Android emulator's debug build permits local HTTP for development. Public
-deployments must use HTTPS and set `CRYPTOSHIELD_API_URL` to the API's HTTPS
-origin. Set `ALLOWED_ORIGINS` to the exact browser origin(s) serving the app.
-Physical phones need a reachable host or HTTPS API URL; `10.0.2.2` is emulator
-only.
+The client permits plain HTTP only for loopback and the Android emulator's
+`10.0.2.2` development address. All other API endpoints must use HTTPS; the
+client blocks remote HTTP connections so session tokens are not sent in
+plaintext. Set `ALLOWED_ORIGINS` to the exact browser origin(s) serving the app.
+Physical phones need a reachable HTTPS API URL; `10.0.2.2` is emulator only.
 
 ## Prepare a self-hosted VM deployment
 

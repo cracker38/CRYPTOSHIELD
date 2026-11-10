@@ -66,6 +66,17 @@ class ApiCryptoShieldService implements CryptoShieldService {
     return _baseUri.replace(path: normalizedPath, queryParameters: query);
   }
 
+  void _ensureSecureTransport() {
+    const localDevelopmentHosts = {'localhost', '127.0.0.1', '::1', '10.0.2.2'};
+    final isLocalDevelopmentHttp = _baseUri.scheme == 'http' &&
+        localDevelopmentHosts.contains(_baseUri.host.toLowerCase());
+    if (_baseUri.scheme != 'https' && !isLocalDevelopmentHttp) {
+      throw const ApiException(
+        'The CRYPTOSHIELD API must use HTTPS outside local development.',
+      );
+    }
+  }
+
   Future<Map<String, dynamic>> _request(
     String method,
     String path, {
@@ -73,6 +84,7 @@ class ApiCryptoShieldService implements CryptoShieldService {
     Map<String, String>? query,
     bool authenticated = false,
   }) async {
+    _ensureSecureTransport();
     final headers = <String, String>{'Accept': 'application/json'};
     if (body != null) headers['Content-Type'] = 'application/json';
     if (authenticated) {
@@ -129,6 +141,7 @@ class ApiCryptoShieldService implements CryptoShieldService {
     Map<String, String>? query,
     bool authenticated = false,
   }) async {
+    _ensureSecureTransport();
     final headers = <String, String>{'Accept': 'application/json'};
     if (authenticated) {
       final token = await _storage.read(key: _tokenKey);
