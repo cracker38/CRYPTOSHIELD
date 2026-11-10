@@ -127,6 +127,16 @@ def make_challenge() -> tuple[str, list[dict[str, str]], str]:
     return question, options, correct
 
 
+def _challenge_attempt_state(
+    user: dict[str, Any], now: datetime
+) -> tuple[int, datetime | None, dict[str, int]]:
+    window_start = user.get("challengeWindowStartedAt")
+    attempts = int(user.get("challengeAttempts", 0))
+    if window_start and now - window_start >= CHALLENGE_ATTEMPT_WINDOW:
+        return 0, None, {"challengeAttempts": 0}
+    return attempts, window_start, {}
+
+
 def _required_env(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:
@@ -396,10 +406,7 @@ def issue_challenge(user_id: str) -> dict[str, Any]:
     if user.get("accountStatus") != "challenge_required":
         raise HTTPException(status_code=403, detail="This account is not awaiting onboarding.")
     now = utcnow()
-    window_start = user.get("challengeWindowStartedAt")
-    attempts = int(user.get("challengeAttempts", 0))
-    if window_start and now - window_start >= CHALLENGE_ATTEMPT_WINDOW:
-        attempts, window_start = 0, None
+    attempts, window_start, updates = _challenge_attempt_state(user, now)
     if attempts >= CHALLENGE_ATTEMPT_LIMIT:
         raise HTTPException(
             status_code=429,
@@ -420,7 +427,6 @@ def issue_challenge(user_id: str) -> dict[str, Any]:
             "consumed": False,
         }
     )
-    updates = {}
     if not window_start:
         updates["challengeWindowStartedAt"] = now
     if updates:
@@ -488,10 +494,7 @@ def answer_onboarding(payload: OnboardingAnswerRequest) -> dict[str, Any]:
         if challenge.get("consumed") or challenge.get("expiresAt") <= now:
             transaction.update(challenge_ref, {"consumed": True})
             return {"error": 410, "detail": "Challenge expired. Sign in to request a new one."}
-        window_start = user.get("challengeWindowStartedAt")
-        attempts = int(user.get("challengeAttempts", 0))
-        if window_start and now - window_start >= CHALLENGE_ATTEMPT_WINDOW:
-            attempts, window_start = 0, None
+        attempts, window_start, _ = _challenge_attempt_state(user, now)
         if attempts >= CHALLENGE_ATTEMPT_LIMIT:
             return {"error": 429, "detail": "Challenge attempts are temporarily limited. Try again later."}
         option_ids = {option["id"] for option in challenge["options"]}

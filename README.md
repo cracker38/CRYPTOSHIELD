@@ -128,3 +128,6 @@ The message encryption protects stored message contents from casual database
 inspection, but the server can decrypt them. It is not end-to-end encryption.
 Do not use the app for confidential communications without independent security
 review and a suitable end-to-end protocol.
+
+See the [Security Control Matrix](./SECURITY-MATRIX.md) for implemented
+protections, readiness gaps, and release gates.
