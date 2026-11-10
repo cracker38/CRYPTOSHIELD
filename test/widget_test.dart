@@ -108,6 +108,33 @@ void main() {
     expect(find.text('Confirm password'), findsOneWidget);
   });
 
+  testWidgets('registration explains administrator approval without email', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      CryptoShieldApp(service: FakeCryptoShieldService()),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('New here? Create an account'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.byType(TextFormField).at(0),
+      'new-user@example.com',
+    );
+    await tester.enterText(find.byType(TextFormField).at(1), 'StrongPass123!');
+    await tester.enterText(find.byType(TextFormField).at(2), 'StrongPass123!');
+    await tester.tap(find.text('Create account'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text(
+        'Registration submitted. An administrator must approve your account before you can sign in. Email verification is not configured.',
+      ),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('approved applicant must pass the challenge before sign-in', (
     tester,
   ) async {

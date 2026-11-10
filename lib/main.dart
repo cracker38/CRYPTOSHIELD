@@ -182,7 +182,7 @@ class _AuthPageState extends State<AuthPage> {
           confirmation.clear();
           showMessage(
             context,
-            'Check your email to verify your address. Your registration then awaits administrator review.',
+            'Registration submitted. An administrator must approve your account before you can sign in. Email verification is not configured.',
           );
         }
       } else {
@@ -444,7 +444,7 @@ class _AuthPageState extends State<AuthPage> {
                 ),
                 const SizedBox(height: 12),
                 const Text(
-                  'Connects securely to Firebase Authentication and Firestore.',
+                  'Connects securely to the CRYPTOSHIELD API and Firestore.',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.white38, fontSize: 12),
                 ),
