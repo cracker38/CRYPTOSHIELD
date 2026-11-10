@@ -1,151 +1,130 @@
 # CRYPTOSHIELD
 
-CRYPTOSHIELD is a Flutter app using Firebase Authentication,
-Cloud Firestore, App Check, and trusted Cloud Functions. Account registration,
-administrator approval, the onboarding challenge, messaging, and Analyzer/Lab
-history use Firebase. The previous FastAPI/SQLite service is no longer used by
-the app.
+CRYPTOSHIELD is a Flutter client backed by a self-hosted FastAPI service.
+Firebase is used only as the persistent Cloud Firestore database: Firebase
+Authentication and Cloud Functions are not used by the app. The API handles
+accounts, sessions, administrator approval, onboarding, messaging, and tool
+history, and accesses Firestore using trusted server credentials.
 
-## Firebase project setup
+## Architecture and data migration
 
-The Android and web clients are configured for the `cryptoshell-a5beb` Firebase
-project. Keep `android/app/src/google-services.json` in place locally. It
-contains client configuration, not a server credential.
+- Flutter sends requests only to the FastAPI API. It does not contain Firebase
+  client credentials or access Firestore directly.
+- The API stores accounts, sessions, onboarding challenges, audit events,
+  conversations, messages, and tool history in Firestore.
+- Firestore rules deny all direct client reads and writes. The API uses the
+  Firebase Admin SDK, which bypasses those rules and must run only on a trusted
+  server.
+- Existing Firebase Authentication accounts, SQLite accounts, and old
+  Firestore records are not automatically migrated. Users must register
+  accounts with the API again. Back up existing data before changing rules.
+- The API does not send email or verify email ownership. Administrator approval
+  remains required before a new account can sign in. Add a verified email
+  delivery provider before using the system for public signups.
 
-Before deploying, in the Firebase Console:
+The Cloud Functions source is no longer part of the Firebase CLI deployment
+configuration. Do not deploy it.
 
-1. Enable **Authentication → Email/Password**.
-   Set the Firebase password policy to require at least 12 characters and
-   enable email-enumeration protection.
-2. Create the default **Cloud Firestore** database in the region appropriate
-   for your team. Database location cannot be changed after creation.
-3. Register the Android app (`com.example.cryptoshield_ai`) in **App Check**.
-   Configure **Play Integrity** for release builds. Add your release signing
-   certificate SHA-256 fingerprint in Firebase/Play Console as required.
-   Register the **CryptoShield Web** app with the **Fraud Defense**
-   (reCAPTCHA Enterprise) App Check provider. The web client has a public site
-   key configured; override it with `FIREBASE_APP_CHECK_RECAPTCHA_SITE_KEY`
-   when running or building if needed. Keep any reCAPTCHA secret key private;
-   it is not used by the Flutter client.
-4. Billing must be enabled for Cloud Functions deployment. App Check debug
-   tokens are only for development; run a debug build, copy the generated
-   token from the device logs, and register it in **App Check → Manage debug
-   tokens**. Never ship a debug token in a release build.
-5. Before release, restrict the Android API key to this package/signing
-   certificate, review Firebase Auth email templates, and configure monitoring
-   and budget alerts.
+## Firebase setup
 
-Install Flutter and the Firebase CLI, sign in, and deploy the rules and
-functions from the repository root:
+Use the existing Firebase project `cryptoshell-a5beb` or set
+`GOOGLE_CLOUD_PROJECT` to another Firebase project ID. Create its default
+Cloud Firestore database. No Firebase Functions API or Firebase Authentication
+setup is needed.
+
+The API server needs the Firestore Admin SDK permission on that project:
+
+- On a Google Cloud VM, attach a dedicated service account with the
+  `Cloud Datastore User` role and use the VM's Application Default Credentials.
+- On another VM, provide Application Default Credentials through the provider's
+  identity integration or mount a service-account credential outside the
+  repository. Never commit credentials or put them in the Flutter app.
+
+Deploy the deny-all rules from the repository root after backing up any
+existing client data:
+
+```bash
+firebase deploy --only firestore:rules,firestore:indexes --project cryptoshell-a5beb
+```
+
+The rules intentionally prevent direct client access; only the trusted API
+server can access Firestore.
+
+## Configure and run the API
+
+Python 3.12 is recommended. Set the project ID, an initial administrator,
+allowed web origins, and a persistent message-encryption key. Keep all secrets
+outside source control:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+gcloud auth application-default login
+
+export GOOGLE_CLOUD_PROJECT=cryptoshell-a5beb
+export ADMIN_EMAIL=admin@example.com
+export ADMIN_PASSWORD='use-a-unique-password-of-at-least-12-characters'
+export MESSAGE_ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+export ALLOWED_ORIGINS=http://localhost:5000
+uvicorn backend.firestore_api:app --host 0.0.0.0 --port 8000
+```
+
+Store `MESSAGE_ENCRYPTION_KEY` persistently and back it up securely. Losing or
+rotating it without re-encrypting conversation keys makes saved messages
+unreadable. The admin account is created only when the configured email is not
+already registered; changing its role requires a separate trusted operator
+procedure.
+
+Check `http://localhost:8000/health` before launching the client.
+
+## Run the Flutter app
+
+Fetch the updated packages and start a browser client:
 
 ```bash
 flutter pub get
-npm ci --prefix functions
-npm run build --prefix functions
-firebase login
-firebase deploy --only firestore:rules,firestore:indexes,functions
+flutter run -d web-server --web-port 5000 \
+  --dart-define=CRYPTOSHIELD_API_URL=http://localhost:8000
 ```
 
-Functions use enforced App Check. Verify the debug App Check token is registered
-before testing registration or admin actions; otherwise those callable
-operations are intentionally rejected. The web client uses its configured
-reCAPTCHA Enterprise site key by default. Override it for another environment
-if needed:
+For an Android emulator with the API running on the same computer:
 
 ```bash
-flutter run -d chrome
-flutter build web
+flutter run -d <device-id> \
+  --dart-define=CRYPTOSHIELD_API_URL=http://10.0.2.2:8000
 ```
 
-The app checks both App Check and the Firestore-backed `healthCheck` callable
-on startup and fails closed with a retryable error if Firebase is unavailable.
-Cloud Functions run in `us-central1`.
+The Android emulator's debug build permits local HTTP for development. Public
+deployments must use HTTPS and set `CRYPTOSHIELD_API_URL` to the API's HTTPS
+origin. Set `ALLOWED_ORIGINS` to the exact browser origin(s) serving the app.
+Physical phones need a reachable host or HTTPS API URL; `10.0.2.2` is emulator
+only.
 
-If startup reports a health-check failure, deploy the functions to the same
-Firebase project configured for the app and confirm `healthCheck` appears in
-the Firebase Console under **Functions**:
+## Prepare a self-hosted VM deployment
 
-```bash
-firebase deploy --project cryptoshell-a5beb --only functions
-```
+The repo includes `backend/Dockerfile` for building a container. Provisioning
+and operating a public VM is outside Firebase and has not been done for you.
+Free VM offers can change, may require payment-card verification, and have
+resource limits; confirm the provider's terms. Configure a persistent disk,
+automatic security updates, firewall rules, HTTPS reverse proxy, backups,
+monitoring, and the environment variables above. Give the VM's service identity
+only the Firestore permissions it needs. Never expose the API over plain HTTP
+on the public internet.
 
-If the function is deployed, inspect its logs and confirm the web App Check
-provider/site key is configured for the registered Firebase web app.
-
-## Bootstrap the first administrator
-
-1. Create the administrator account under **Firebase Authentication** using
-   Email/Password and verify its email.
-2. Use Google Application Default Credentials for a trusted operator account
-   with Firebase Authentication and Firestore administration permissions. Do
-   not put a service-account key in this repository.
-3. Assign the admin custom claim and profile:
-
-```bash
-gcloud auth application-default login
-npm run set-admin --prefix functions -- admin@example.com
-```
-
-Sign out and back in after setting the custom claim. Admin operations require
-both the trusted `admin` custom claim and an active admin profile; client
-requests cannot grant roles.
-
-## Account and data lifecycle
-
-- New accounts use Firebase Authentication and must verify their email.
-- Registration requests are inactive until an administrator approves them.
-- An approved user must pass a random, server-verified defensive security
-  scenario before Firestore access is enabled. Challenges expire after ten
-  minutes, are single-use, and have a five-attempt/15-minute cooldown.
-- Admin review, account status changes, and onboarding outcomes are recorded in
-  the private `accountAuditLog` collection.
-- Analyzer samples/reports and Lab inputs/outputs are stored under the signed-in
-  user's `users/{uid}/toolHistory` collection. Each account can read its own
-  records; entries are limited to 20,000 characters per input and result, and
-  the screens show the 50 most recent entries by tool type.
-- Firestore rules deny direct client writes to account profiles, admin records,
-  and challenge records. Tool history is limited to its owner and active
-  accounts; messaging is limited to active conversation members.
-- Firebase App Check is enforced on callable functions. Debug builds use the
-  Android debug provider; release builds use Play Integrity.
-
-The challenge is a knowledge check, not identity verification, MFA, or proof
-of professional cybersecurity competence. Use a stronger team identity and
-access-management process for production.
-
-## Existing SQLite data
-
-The app no longer reads or writes `backend/cryptoshield.db`; that file is left
-untouched as a legacy copy. Existing SQLite password hashes cannot be moved
-directly into Firebase Authentication. Existing users must create and verify
-Firebase accounts, and old messages are not automatically migrated. Export
-and migrate old records only with an approved account-mapping and retention
-plan; do not copy credentials or service-account keys into the repository.
-
-## Run and validate
-
-Firebase is configured for Android and web, not native Linux desktop. On a
-Linux machine, `flutter run` may select Linux automatically and display an
-unsupported-platform message. Run in a browser instead:
-
-```bash
-flutter run -d web-server
-```
-
-Open the local URL printed by Flutter. Alternatively, connect an Android device
-or start an Android emulator and run `flutter run -d <device-id>`. Native Linux
-Firebase support is not provided by the configured FlutterFire plugins.
+## Development checks
 
 ```bash
 flutter analyze
 flutter test
+pip install -r backend/requirements-dev.txt
+pytest backend/test_backend.py
 ```
 
-Firebase initialization is configured for Android and web. Other platforms
-still need their own Firebase app registration and platform-specific setup
-before being enabled.
+`backend/main.py` and its SQLite tests are retained as a legacy local backend;
+the Flutter app uses `backend/firestore_api.py`.
 
-Firestore encrypts stored data at rest, but messages are **not end-to-end
-encrypted**: authorized clients can read conversation contents. Do not send
-sensitive or confidential material until the system has undergone independent
-security review and a suitable end-to-end protocol is implemented.
+The message encryption protects stored message contents from casual database
+inspection, but the server can decrypt them. It is not end-to-end encryption.
+Do not use the app for confidential communications without independent security
+review and a suitable end-to-end protocol.

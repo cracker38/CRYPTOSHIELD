@@ -3,6 +3,9 @@
 *.log
 *.pyc
 *.swp
+.env
+.env.*
+service-account*.json
 .DS_Store
 .atom/
 .build/

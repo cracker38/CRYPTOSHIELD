@@ -1,16 +1,11 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'firebase_service.dart';
+import 'api_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  try {
-    await initializeFirebase();
-    runApp(const FirebaseStartupGate());
-  } on FirebaseStartupException catch (error) {
-    runApp(FirebaseUnavailableApp(message: error.message));
-  }
+  runApp(const ApiStartupGate());
 }
 
 const navy = Color(0xFF07111F);
@@ -28,7 +23,8 @@ class CryptoShieldApp extends StatefulWidget {
 }
 
 class _CryptoShieldAppState extends State<CryptoShieldApp> {
-  late final CryptoShieldService service = widget.service ?? FirebaseService();
+  late final CryptoShieldService service =
+      widget.service ?? ApiCryptoShieldService();
   Map<String, dynamic>? user;
   String? startupError;
 
@@ -85,7 +81,7 @@ class _CryptoShieldAppState extends State<CryptoShieldApp> {
           ),
         ),
         home: startupError != null
-            ? FirebaseErrorPage(message: startupError!, onRetry: _restoreUser)
+            ? ApiErrorPage(message: startupError!, onRetry: _restoreUser)
             : user == null
                 ? AuthPage(
                     service: service,
@@ -99,30 +95,31 @@ class _CryptoShieldAppState extends State<CryptoShieldApp> {
       );
 }
 
-class FirebaseStartupGate extends StatefulWidget {
-  const FirebaseStartupGate({super.key});
+class ApiStartupGate extends StatefulWidget {
+  const ApiStartupGate({super.key});
 
   @override
-  State<FirebaseStartupGate> createState() => _FirebaseStartupGateState();
+  State<ApiStartupGate> createState() => _ApiStartupGateState();
 }
 
-class _FirebaseStartupGateState extends State<FirebaseStartupGate> {
+class _ApiStartupGateState extends State<ApiStartupGate> {
   late Future<void> healthCheck;
 
   @override
   void initState() {
     super.initState();
-    healthCheck = FirebaseService().checkHealth();
+    healthCheck = ApiCryptoShieldService().checkHealth();
   }
 
-  void retry() => setState(() => healthCheck = FirebaseService().checkHealth());
+  void retry() =>
+      setState(() => healthCheck = ApiCryptoShieldService().checkHealth());
 
   @override
   Widget build(BuildContext context) => FutureBuilder<void>(
         future: healthCheck,
         builder: (context, snapshot) {
           if (snapshot.hasError) {
-            return FirebaseUnavailableApp(
+            return ApiUnavailableApp(
               message: snapshot.error is ApiException
                   ? (snapshot.error! as ApiException).message
                   : snapshot.error.toString(),
@@ -141,8 +138,8 @@ class _FirebaseStartupGateState extends State<FirebaseStartupGate> {
       );
 }
 
-class FirebaseUnavailableApp extends StatelessWidget {
-  const FirebaseUnavailableApp({
+class ApiUnavailableApp extends StatelessWidget {
+  const ApiUnavailableApp({
     required this.message,
     this.onRetry,
     super.key,
@@ -167,7 +164,7 @@ class FirebaseUnavailableApp extends StatelessWidget {
                         size: 48, color: Colors.orange),
                     const SizedBox(height: 16),
                     const Text(
-                      'Firebase is unavailable',
+                      'CRYPTOSHIELD API is unavailable',
                       style:
                           TextStyle(fontSize: 24, fontWeight: FontWeight.w800),
                     ),
@@ -189,8 +186,8 @@ class FirebaseUnavailableApp extends StatelessWidget {
       );
 }
 
-class FirebaseErrorPage extends StatelessWidget {
-  const FirebaseErrorPage({
+class ApiErrorPage extends StatelessWidget {
+  const ApiErrorPage({
     required this.message,
     required this.onRetry,
     super.key,

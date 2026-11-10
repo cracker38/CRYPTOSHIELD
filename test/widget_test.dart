@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:cryptoshield_ai/firebase_service.dart';
+import 'package:cryptoshield_ai/api_service.dart';
 import 'package:cryptoshield_ai/main.dart';
 
 class FakeCryptoShieldService implements CryptoShieldService {
