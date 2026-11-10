@@ -59,8 +59,14 @@ class FirebaseService implements CryptoShieldService {
       }
       return Map<String, dynamic>.from(result.data! as Map);
     } on FirebaseFunctionsException catch (error) {
-      throw ApiException(
-          error.message ?? 'Firebase request failed (${error.code}).');
+      final message =
+          error.message ?? 'Firebase request failed (${error.code}).';
+      final healthCheckHint = name == 'healthCheck'
+          ? '\nConfirm that Cloud Functions are deployed to us-central1. '
+              'If healthCheck is deployed, check its Cloud Functions logs '
+              'and the web App Check configuration.'
+          : '';
+      throw ApiException('$message$healthCheckHint');
     } on FirebaseException catch (error) {
       throw ApiException(
           error.message ?? 'Firebase request failed (${error.code}).');

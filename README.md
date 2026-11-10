@@ -61,6 +61,17 @@ The app checks both App Check and the Firestore-backed `healthCheck` callable
 on startup and fails closed with a retryable error if Firebase is unavailable.
 Cloud Functions run in `us-central1`.
 
+If startup reports a health-check failure, deploy the functions to the same
+Firebase project configured for the app and confirm `healthCheck` appears in
+the Firebase Console under **Functions**:
+
+```bash
+firebase deploy --project cryptoshell-a5beb --only functions
+```
+
+If the function is deployed, inspect its logs and confirm the web App Check
+provider/site key is configured for the registered Firebase web app.
+
 ## Bootstrap the first administrator
 
 1. Create the administrator account under **Firebase Authentication** using
