@@ -381,8 +381,11 @@ class FirebaseStartupException implements Exception {
 
 Future<void> initializeFirebase() async {
   if (!kIsWeb && defaultTargetPlatform != TargetPlatform.android) {
-    throw const FirebaseStartupException(
-      'Firebase is currently configured for Android and web only.',
+    throw FirebaseStartupException(
+      'Firebase is not configured for ${defaultTargetPlatform.name} desktop. '
+      'This app supports Android and web. Run `flutter run -d web-server` '
+      'and open the local URL in a browser, or connect an Android device. '
+      'Native Linux Firebase support is not available in the configured plugins.',
     );
   }
 

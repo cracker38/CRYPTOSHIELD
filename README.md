@@ -113,8 +113,19 @@ plan; do not copy credentials or service-account keys into the repository.
 
 ## Run and validate
 
+Firebase is configured for Android and web, not native Linux desktop. On a
+Linux machine, `flutter run` may select Linux automatically and display an
+unsupported-platform message. Run in a browser instead:
+
 ```bash
-flutter run
+flutter run -d web-server
+```
+
+Open the local URL printed by Flutter. Alternatively, connect an Android device
+or start an Android emulator and run `flutter run -d <device-id>`. Native Linux
+Firebase support is not provided by the configured FlutterFire plugins.
+
+```bash
 flutter analyze
 flutter test
 ```
