@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
+import smtplib
+import ssl
+from email.message import EmailMessage
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from cryptography.fernet import Fernet
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from firebase_admin import firestore, initialize_app
 from google.api_core.exceptions import AlreadyExists
@@ -20,8 +24,16 @@ SESSION_TTL = timedelta(days=30)
 CHALLENGE_TTL = timedelta(minutes=10)
 CHALLENGE_ATTEMPT_LIMIT = 5
 CHALLENGE_ATTEMPT_WINDOW = timedelta(minutes=15)
+AUTH_RATE_WINDOW = timedelta(minutes=15)
+REGISTER_IP_LIMIT = 5
+REGISTER_EMAIL_LIMIT = 3
+LOGIN_IP_LIMIT = 60
+LOGIN_EMAIL_LIMIT = 10
+EMAIL_TOKEN_TTL = timedelta(minutes=30)
+ACTION_RATE_WINDOW = timedelta(hours=1)
 PASSWORD_ITERATIONS = 310_000
 EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+logger = logging.getLogger(__name__)
 
 SCENARIOS = (
     (
@@ -125,6 +137,151 @@ def verify_totp(secret: str, code: str, now: datetime | None = None) -> bool:
 
 def email_id(email: str) -> str:
     return digest(email.strip().lower())
+
+
+def _client_id(request: Request) -> str:
+    if request.client is None or not request.client.host:
+        return "unknown"
+    return request.client.host
+
+
+def enforce_rate_limit(
+    scope: str,
+    identity: str,
+    limit: int,
+    window: timedelta,
+) -> None:
+    now = utcnow()
+    window_seconds = int(window.total_seconds())
+    window_start = int(now.timestamp() // window_seconds) * window_seconds
+    expires_at = datetime.fromtimestamp(
+        window_start + window_seconds * 2, timezone.utc
+    )
+    ref = database().collection("rateLimits").document(
+        digest(f"{scope}:{identity}:{window_start}")
+    )
+
+    @firestore.transactional
+    def consume(transaction) -> bool:
+        snapshot = ref.get(transaction=transaction)
+        current_count = int(snapshot.get("count") or 0) if snapshot.exists else 0
+        if current_count >= limit:
+            return False
+        values = {"count": current_count + 1, "expiresAt": expires_at}
+        if snapshot.exists:
+            transaction.update(ref, values)
+        else:
+            transaction.create(ref, values)
+        return True
+
+    if not consume(database().transaction()):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please wait before trying again.",
+            headers={"Retry-After": str(window_seconds)},
+        )
+
+
+def enforce_auth_rate_limit(
+    request: Request,
+    email: str,
+    *,
+    ip_limit: int,
+    email_limit: int,
+) -> None:
+    client_id = _client_id(request)
+    enforce_rate_limit("auth-ip", client_id, ip_limit, AUTH_RATE_WINDOW)
+    enforce_rate_limit(
+        "auth-email",
+        email_id(email),
+        email_limit * 2,
+        AUTH_RATE_WINDOW,
+    )
+    enforce_rate_limit(
+        "auth-email-ip",
+        f"{email_id(email)}:{digest(client_id)}",
+        email_limit,
+        AUTH_RATE_WINDOW,
+    )
+
+
+def send_action_email(email: str, subject: str, token: str, action: str) -> None:
+    host = os.getenv("SMTP_HOST", "").strip()
+    sender = os.getenv("SMTP_FROM", "").strip()
+    if not host or not sender:
+        raise RuntimeError("SMTP_HOST and SMTP_FROM must be configured.")
+    try:
+        port = int(os.getenv("SMTP_PORT", "587"))
+    except ValueError as error:
+        raise RuntimeError("SMTP_PORT must be a valid port number.") from error
+    username = os.getenv("SMTP_USERNAME", "")
+    password = os.getenv("SMTP_PASSWORD", "")
+    if bool(username) != bool(password):
+        raise RuntimeError("SMTP_USERNAME and SMTP_PASSWORD must be configured together.")
+
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = sender
+    message["To"] = email
+    message.set_content(
+        f"Your CRYPTOSHIELD {action} code is:\n\n{token}\n\n"
+        "It expires in 30 minutes. If you did not request this, you can ignore "
+        "this email."
+    )
+    context = ssl.create_default_context()
+    with smtplib.SMTP(host, port, timeout=10) as server:
+        server.ehlo()
+        server.starttls(context=context)
+        server.ehlo()
+        if username:
+            server.login(username, password)
+        server.send_message(message)
+
+
+def _deliver_action_email(email: str, subject: str, token: str, action: str) -> None:
+    try:
+        send_action_email(email, subject, token, action)
+    except (OSError, smtplib.SMTPException, RuntimeError):
+        logger.exception("Could not deliver %s email.", action)
+        raise HTTPException(
+            status_code=503,
+            detail="Email delivery is temporarily unavailable. Please try again later.",
+        ) from None
+
+
+def _issue_action_token(
+    user_id: str,
+    email: str,
+    *,
+    collection_name: str,
+    user_field: str,
+) -> str:
+    token = secrets.token_urlsafe(32)
+    now = utcnow()
+    client = database()
+    user_ref = client.collection("users").document(user_id)
+    challenge_ref = client.collection(collection_name).document(digest(token))
+
+    @firestore.transactional
+    def save(transaction) -> bool:
+        user_snapshot = user_ref.get(transaction=transaction)
+        if not user_snapshot.exists:
+            return False
+        transaction.set(
+            challenge_ref,
+            {
+                "uid": user_id,
+                "createdAt": now,
+                "expiresAt": now + EMAIL_TOKEN_TTL,
+                "attempts": 0,
+            },
+        )
+        transaction.update(user_ref, {user_field: digest(token)})
+        return True
+
+    if not save(client.transaction()):
+        raise HTTPException(status_code=404, detail="Account was not found.")
+    return token
 
 
 def make_challenge() -> tuple[str, list[dict[str, str]], str]:
@@ -273,6 +430,8 @@ def bootstrap_admin() -> None:
                 "role": "admin",
                 "accountStatus": "active",
                 "isActive": True,
+                "emailVerified": True,
+                "authVersion": 0,
                 "createdAt": now,
             },
         )
@@ -310,6 +469,12 @@ def current_user(authorization: str | None = Header(default=None)) -> dict[str, 
     if user.get("totpEnabled") is not True:
         session_ref.delete()
         raise HTTPException(status_code=403, detail="Multi-factor authentication must be enrolled before access.")
+    if user.get("emailVerified") is not True:
+        session_ref.delete()
+        raise HTTPException(status_code=403, detail="Verify your email address before continuing.")
+    if int(session_data.get("authVersion", 0)) != int(user.get("authVersion", 0)):
+        session_ref.delete()
+        raise HTTPException(status_code=401, detail="Session is invalid or expired.")
     return {"uid": user_doc.id, **user}
 
 
@@ -321,8 +486,14 @@ def require_admin(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any
 
 def create_session(user_id: str) -> str:
     token = secrets.token_urlsafe(32)
+    user = database().collection("users").document(user_id).get()
     database().collection("sessions").document(digest(token)).set(
-        {"uid": user_id, "createdAt": utcnow(), "expiresAt": utcnow() + SESSION_TTL}
+        {
+            "uid": user_id,
+            "authVersion": int((user.to_dict() or {}).get("authVersion", 0)),
+            "createdAt": utcnow(),
+            "expiresAt": utcnow() + SESSION_TTL,
+        }
     )
     return token
 
@@ -335,6 +506,19 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str = Field(min_length=3, max_length=254)
     password: str = Field(min_length=1, max_length=128)
+
+
+class EmailTokenRequest(BaseModel):
+    token: str = Field(min_length=32, max_length=128)
+
+
+class EmailAddressRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+
+
+class PasswordResetRequest(BaseModel):
+    token: str = Field(min_length=32, max_length=128)
+    new_password: str = Field(min_length=12, max_length=128)
 
 
 class OnboardingAnswerRequest(BaseModel):
@@ -374,8 +558,14 @@ def health() -> dict[str, str]:
 
 
 @app.post("/v1/register")
-def register_user(payload: RegisterRequest) -> dict[str, Any]:
+def register_user(payload: RegisterRequest, request: Request) -> dict[str, Any]:
     email = payload.username.strip().lower()
+    enforce_auth_rate_limit(
+        request,
+        email,
+        ip_limit=REGISTER_IP_LIMIT,
+        email_limit=REGISTER_EMAIL_LIMIT,
+    )
     if not EMAIL_PATTERN.fullmatch(email):
         raise HTTPException(status_code=400, detail="Enter a valid email address.")
     client = database()
@@ -397,6 +587,8 @@ def register_user(payload: RegisterRequest) -> dict[str, Any]:
                 "role": "user",
                 "accountStatus": "pending_review",
                 "isActive": False,
+                "emailVerified": False,
+                "authVersion": 0,
                 "createdAt": now,
             },
         )
@@ -405,12 +597,109 @@ def register_user(payload: RegisterRequest) -> dict[str, Any]:
 
     if not create_user(client.transaction()):
         raise HTTPException(status_code=409, detail="This email is already registered.")
+    token = _issue_action_token(
+        user_id,
+        email,
+        collection_name="emailVerificationChallenges",
+        user_field="emailVerificationTokenHash",
+    )
+    _deliver_action_email(
+        email,
+        "Verify your CRYPTOSHIELD email",
+        token,
+        "email verification",
+    )
     record_event(user_id, "registration_submitted")
+    record_event(user_id, "email_verification_sent")
     return {
-        "status": "pending_review",
+        "status": "email_verification_required",
         "user": {"id": user_id, "username": email, "role": "user"},
-        "message": "Registration submitted. An administrator must review your request.",
+        "message": "Verify your email address. An administrator must also review your request.",
     }
+
+
+@app.post("/v1/email/verify")
+def verify_email(payload: EmailTokenRequest, request: Request) -> dict[str, str]:
+    enforce_rate_limit(
+        "email-verify-ip",
+        _client_id(request),
+        30,
+        ACTION_RATE_WINDOW,
+    )
+    client = database()
+    challenge_ref = client.collection("emailVerificationChallenges").document(
+        digest(payload.token)
+    )
+
+    @firestore.transactional
+    def consume(transaction) -> str | None:
+        challenge = challenge_ref.get(transaction=transaction)
+        if not challenge.exists:
+            return None
+        data = challenge.to_dict() or {}
+        user_ref = client.collection("users").document(data["uid"])
+        user_snapshot = user_ref.get(transaction=transaction)
+        if (
+            not user_snapshot.exists
+            or data.get("expiresAt") <= utcnow()
+            or (user_snapshot.to_dict() or {}).get("emailVerificationTokenHash")
+            != challenge_ref.id
+        ):
+            transaction.delete(challenge_ref)
+            return None
+        transaction.update(
+            user_ref,
+            {
+                "emailVerified": True,
+                "emailVerifiedAt": utcnow(),
+                "emailVerificationTokenHash": firestore.DELETE_FIELD,
+            },
+        )
+        transaction.delete(challenge_ref)
+        return user_snapshot.id
+
+    user_id = consume(client.transaction())
+    if user_id is None:
+        raise HTTPException(status_code=400, detail="Verification code is invalid or expired.")
+    record_event(user_id, "email_verified")
+    return {"status": "verified"}
+
+
+@app.post("/v1/email/verification/resend")
+def resend_email_verification(
+    payload: EmailAddressRequest,
+    request: Request,
+) -> dict[str, str]:
+    email = payload.email.strip().lower()
+    enforce_rate_limit("email-resend-ip", _client_id(request), 20, ACTION_RATE_WINDOW)
+    enforce_rate_limit(
+        "email-resend-address",
+        f"{email_id(email)}:{digest(_client_id(request))}",
+        3,
+        ACTION_RATE_WINDOW,
+    )
+    if EMAIL_PATTERN.fullmatch(email):
+        client = database()
+        email_doc = client.collection("userEmails").document(email_id(email)).get()
+        if email_doc.exists:
+            user_id = email_doc.get("uid")
+            user_doc = client.collection("users").document(user_id).get()
+            user = user_doc.to_dict() if user_doc.exists else None
+            if user and user.get("emailVerified") is not True:
+                token = _issue_action_token(
+                    user_id,
+                    email,
+                    collection_name="emailVerificationChallenges",
+                    user_field="emailVerificationTokenHash",
+                )
+                _deliver_action_email(
+                    email,
+                    "Verify your CRYPTOSHIELD email",
+                    token,
+                    "email verification",
+                )
+                record_event(user_id, "email_verification_sent")
+    return {"status": "if_unverified_account_exists_email_sent"}
 
 
 def issue_challenge(user_id: str) -> dict[str, Any]:
@@ -466,6 +755,7 @@ def issue_mfa_challenge(user_id: str, user: dict[str, Any]) -> dict[str, Any]:
     challenge: dict[str, Any] = {
         "uid": user_id,
         "purpose": "login",
+        "authVersion": int(user.get("authVersion", 0)),
         "createdAt": now,
         "expiresAt": now + CHALLENGE_TTL,
         "attempts": 0,
@@ -495,8 +785,14 @@ def issue_mfa_challenge(user_id: str, user: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.post("/v1/login")
-def login_user(payload: LoginRequest) -> dict[str, Any]:
+def login_user(payload: LoginRequest, request: Request) -> dict[str, Any]:
     email = payload.username.strip().lower()
+    enforce_auth_rate_limit(
+        request,
+        email,
+        ip_limit=LOGIN_IP_LIMIT,
+        email_limit=LOGIN_EMAIL_LIMIT,
+    )
     client = database()
     email_doc = client.collection("userEmails").document(email_id(email)).get()
     if not email_doc.exists:
@@ -506,6 +802,11 @@ def login_user(payload: LoginRequest) -> dict[str, Any]:
     user = user_doc.to_dict() if user_doc.exists else None
     if user is None or not verify_password(payload.password, user.get("passwordHash", "")):
         raise HTTPException(status_code=401, detail="Invalid username or password.")
+    if user.get("emailVerified") is not True:
+        raise HTTPException(
+            status_code=403,
+            detail="Verify your email address before signing in.",
+        )
     status = user.get("accountStatus")
     if status == "pending_review":
         raise HTTPException(status_code=403, detail="Your account request is awaiting administrator review.")
@@ -516,6 +817,97 @@ def login_user(payload: LoginRequest) -> dict[str, Any]:
     if status == "disabled" or user.get("isActive") is not True:
         raise HTTPException(status_code=403, detail="This account has been disabled.")
     return issue_mfa_challenge(user_doc.id, user)
+
+
+@app.post("/v1/password-reset/request")
+def request_password_reset(
+    payload: EmailAddressRequest,
+    request: Request,
+) -> dict[str, str]:
+    email = payload.email.strip().lower()
+    client_id = _client_id(request)
+    enforce_rate_limit("password-reset-ip", client_id, 20, ACTION_RATE_WINDOW)
+    enforce_rate_limit(
+        "password-reset-address",
+        f"{email_id(email)}:{digest(client_id)}",
+        3,
+        ACTION_RATE_WINDOW,
+    )
+    if EMAIL_PATTERN.fullmatch(email):
+        client = database()
+        email_doc = client.collection("userEmails").document(email_id(email)).get()
+        if email_doc.exists:
+            user_id = email_doc.get("uid")
+            user_doc = client.collection("users").document(user_id).get()
+            user = user_doc.to_dict() if user_doc.exists else None
+            if user and user.get("emailVerified") is True:
+                token = _issue_action_token(
+                    user_id,
+                    email,
+                    collection_name="passwordResetChallenges",
+                    user_field="passwordResetTokenHash",
+                )
+                _deliver_action_email(
+                    email,
+                    "Reset your CRYPTOSHIELD password",
+                    token,
+                    "password reset",
+                )
+                record_event(user_id, "password_reset_requested")
+    return {"status": "if_verified_account_exists_email_sent"}
+
+
+@app.post("/v1/password-reset/confirm")
+def confirm_password_reset(
+    payload: PasswordResetRequest,
+    request: Request,
+) -> dict[str, str]:
+    enforce_rate_limit(
+        "password-reset-confirm-ip",
+        _client_id(request),
+        30,
+        ACTION_RATE_WINDOW,
+    )
+    client = database()
+    challenge_ref = client.collection("passwordResetChallenges").document(
+        digest(payload.token)
+    )
+    new_password_hash = hash_password(payload.new_password)
+
+    @firestore.transactional
+    def consume(transaction) -> str | None:
+        challenge = challenge_ref.get(transaction=transaction)
+        if not challenge.exists:
+            return None
+        data = challenge.to_dict() or {}
+        user_ref = client.collection("users").document(data["uid"])
+        user_snapshot = user_ref.get(transaction=transaction)
+        if (
+            not user_snapshot.exists
+            or data.get("expiresAt") <= utcnow()
+            or (user_snapshot.to_dict() or {}).get("passwordResetTokenHash")
+            != challenge_ref.id
+        ):
+            transaction.delete(challenge_ref)
+            return None
+        user = user_snapshot.to_dict() or {}
+        transaction.update(
+            user_ref,
+            {
+                "passwordHash": new_password_hash,
+                "authVersion": int(user.get("authVersion", 0)) + 1,
+                "passwordResetTokenHash": firestore.DELETE_FIELD,
+                "passwordChangedAt": utcnow(),
+            },
+        )
+        transaction.delete(challenge_ref)
+        return user_snapshot.id
+
+    user_id = consume(client.transaction())
+    if user_id is None:
+        raise HTTPException(status_code=400, detail="Reset code is invalid or expired.")
+    record_event(user_id, "password_reset_completed")
+    return {"status": "password_reset"}
 
 
 @app.post("/v1/mfa/verify")
@@ -583,7 +975,11 @@ def verify_mfa(payload: MfaVerifyRequest) -> dict[str, Any]:
             return False
         latest_data = latest_challenge.to_dict() or {}
         latest_user_data = latest_user.to_dict() or {}
-        if latest_data.get("purpose") != purpose:
+        if (
+            latest_data.get("purpose") != purpose
+            or int(latest_data.get("authVersion", 0))
+            != int(latest_user_data.get("authVersion", 0))
+        ):
             return False
         if is_recovery:
             latest_recovery_hashes = latest_user_data.get("totpRecoveryHashes", [])
@@ -613,6 +1009,7 @@ def verify_mfa(payload: MfaVerifyRequest) -> dict[str, Any]:
             session_ref,
             {
                 "uid": user_doc.id,
+                "authVersion": int(latest_user_data.get("authVersion", 0)),
                 "createdAt": utcnow(),
                 "expiresAt": utcnow() + SESSION_TTL,
             },
@@ -701,7 +1098,12 @@ def answer_onboarding(payload: OnboardingAnswerRequest) -> dict[str, Any]:
                 "challengeWindowStartedAt": firestore.DELETE_FIELD,
             },
         )
-        return {"uid": user_doc.id, "email": user["email"], "role": user.get("role", "user")}
+        return {
+            "uid": user_doc.id,
+            "email": user["email"],
+            "role": user.get("role", "user"),
+            "authVersion": int(user.get("authVersion", 0)),
+        }
 
     result = consume_challenge(client.transaction())
     if "error" in result:
@@ -714,6 +1116,7 @@ def answer_onboarding(payload: OnboardingAnswerRequest) -> dict[str, Any]:
         {
             "email": result["email"],
             "totpEnabled": False,
+            "authVersion": result["authVersion"],
         },
     )
 

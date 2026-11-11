@@ -17,6 +17,10 @@ class ApiException implements Exception {
 abstract interface class CryptoShieldService {
   Future<void> checkHealth();
   Future<void> register(String email, String password);
+  Future<void> verifyEmail(String token);
+  Future<void> resendEmailVerification(String email);
+  Future<void> requestPasswordReset(String email);
+  Future<void> confirmPasswordReset(String token, String newPassword);
   Future<Map<String, dynamic>> login(String email, String password);
   Future<Map<String, dynamic>> answerChallenge(
     String challengeToken,
@@ -193,6 +197,42 @@ class ApiCryptoShieldService implements CryptoShieldService {
       'POST',
       '/v1/register',
       body: {'username': email.trim(), 'password': password},
+    );
+  }
+
+  @override
+  Future<void> verifyEmail(String token) async {
+    await _request(
+      'POST',
+      '/v1/email/verify',
+      body: {'token': token.trim()},
+    );
+  }
+
+  @override
+  Future<void> resendEmailVerification(String email) async {
+    await _request(
+      'POST',
+      '/v1/email/verification/resend',
+      body: {'email': email.trim()},
+    );
+  }
+
+  @override
+  Future<void> requestPasswordReset(String email) async {
+    await _request(
+      'POST',
+      '/v1/password-reset/request',
+      body: {'email': email.trim()},
+    );
+  }
+
+  @override
+  Future<void> confirmPasswordReset(String token, String newPassword) async {
+    await _request(
+      'POST',
+      '/v1/password-reset/confirm',
+      body: {'token': token.trim(), 'new_password': newPassword},
     );
   }
 
