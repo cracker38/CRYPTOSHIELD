@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from firebase_admin import firestore, initialize_app
 from google.api_core.exceptions import AlreadyExists
 from pydantic import BaseModel, Field
+import pyotp
 
 SESSION_TTL = timedelta(days=30)
 CHALLENGE_TTL = timedelta(minutes=10)
@@ -113,6 +114,13 @@ def verify_password(password: str, stored: str) -> bool:
         return False
     actual = hash_password(password, salt).split("$", 1)[1]
     return secrets.compare_digest(actual, expected)
+
+
+def verify_totp(secret: str, code: str, now: datetime | None = None) -> bool:
+    if len(code) != 6 or not code.isdigit():
+        return False
+    timestamp = (now or utcnow()).timestamp()
+    return pyotp.TOTP(secret).verify(code, for_time=timestamp, valid_window=1)
 
 
 def email_id(email: str) -> str:
@@ -223,6 +231,7 @@ def _user_summary(user_id: str, user: dict[str, Any]) -> dict[str, Any]:
         "role": user.get("role", "user"),
         "account_status": user.get("accountStatus", "active"),
         "is_active": user.get("isActive", True),
+        "mfa_enabled": user.get("totpEnabled") is True,
     }
 
 
@@ -298,6 +307,9 @@ def current_user(authorization: str | None = Header(default=None)) -> dict[str, 
     ):
         session_ref.delete()
         raise HTTPException(status_code=403, detail="This account is not active.")
+    if user.get("totpEnabled") is not True:
+        session_ref.delete()
+        raise HTTPException(status_code=403, detail="Multi-factor authentication must be enrolled before access.")
     return {"uid": user_doc.id, **user}
 
 
@@ -328,6 +340,11 @@ class LoginRequest(BaseModel):
 class OnboardingAnswerRequest(BaseModel):
     challenge_token: str = Field(min_length=32, max_length=128)
     option_id: str = Field(min_length=8, max_length=64)
+
+
+class MfaVerifyRequest(BaseModel):
+    challenge_token: str = Field(min_length=32, max_length=128)
+    code: str = Field(min_length=6, max_length=32)
 
 
 class AdminReviewRequest(BaseModel):
@@ -442,6 +459,41 @@ def issue_challenge(user_id: str) -> dict[str, Any]:
     }
 
 
+def issue_mfa_challenge(user_id: str, user: dict[str, Any]) -> dict[str, Any]:
+    token = secrets.token_urlsafe(32)
+    challenge_id = digest(token)
+    now = utcnow()
+    challenge: dict[str, Any] = {
+        "uid": user_id,
+        "purpose": "login",
+        "createdAt": now,
+        "expiresAt": now + CHALLENGE_TTL,
+        "attempts": 0,
+    }
+    response: dict[str, Any] = {"challenge_token": token}
+    if user.get("totpEnabled") is True:
+        response["status"] = "mfa_required"
+    else:
+        secret = pyotp.random_base32()
+        challenge["purpose"] = "enroll"
+        challenge["encryptedSecret"] = message_cipher.encrypt(
+            secret.encode("ascii")
+        ).decode("ascii")
+        response.update(
+            {
+                "status": "mfa_enrollment_required",
+                "secret": secret,
+                "provisioning_uri": pyotp.TOTP(secret).provisioning_uri(
+                    name=user["email"],
+                    issuer_name="CRYPTOSHIELD",
+                ),
+            }
+        )
+    database().collection("mfaChallenges").document(challenge_id).create(challenge)
+    record_event(user_id, response["status"])
+    return response
+
+
 @app.post("/v1/login")
 def login_user(payload: LoginRequest) -> dict[str, Any]:
     email = payload.username.strip().lower()
@@ -463,12 +515,125 @@ def login_user(payload: LoginRequest) -> dict[str, Any]:
         return {"status": "challenge_required", **issue_challenge(user_doc.id)}
     if status == "disabled" or user.get("isActive") is not True:
         raise HTTPException(status_code=403, detail="This account has been disabled.")
-    token = create_session(user_doc.id)
-    return {
+    return issue_mfa_challenge(user_doc.id, user)
+
+
+@app.post("/v1/mfa/verify")
+def verify_mfa(payload: MfaVerifyRequest) -> dict[str, Any]:
+    client = database()
+    challenge_ref = client.collection("mfaChallenges").document(
+        digest(payload.challenge_token)
+    )
+    challenge_doc = challenge_ref.get()
+    if not challenge_doc.exists:
+        raise HTTPException(status_code=401, detail="MFA challenge is invalid or expired.")
+    challenge = challenge_doc.to_dict() or {}
+    user_ref = client.collection("users").document(challenge["uid"])
+    user_doc = user_ref.get()
+    user = user_doc.to_dict() if user_doc.exists else None
+    if user is None:
+        raise HTTPException(status_code=401, detail="MFA challenge is invalid or expired.")
+    now = utcnow()
+    if challenge.get("expiresAt") <= now:
+        challenge_ref.delete()
+        raise HTTPException(status_code=410, detail="MFA challenge expired. Sign in again.")
+    if int(challenge.get("attempts", 0)) >= CHALLENGE_ATTEMPT_LIMIT:
+        challenge_ref.delete()
+        raise HTTPException(status_code=429, detail="MFA attempts are limited. Sign in again.")
+
+    purpose = challenge.get("purpose")
+    if purpose == "enroll":
+        secret = message_cipher.decrypt(
+            challenge["encryptedSecret"].encode("ascii")
+        ).decode("ascii")
+    elif purpose == "login" and user.get("totpEnabled") is True:
+        secret = message_cipher.decrypt(
+            user["totpSecret"].encode("ascii")
+        ).decode("ascii")
+    else:
+        challenge_ref.delete()
+        raise HTTPException(status_code=409, detail="MFA challenge is no longer valid.")
+
+    supplied_code = payload.code.strip()
+    normalized_code = supplied_code.replace(" ", "").replace("-", "")
+    valid_totp = verify_totp(secret, normalized_code, now)
+    recovery_hashes = user.get("totpRecoveryHashes", [])
+    recovery_digest = digest(supplied_code.upper())
+    is_recovery = purpose == "login" and recovery_digest in recovery_hashes
+    if not valid_totp and not is_recovery:
+        challenge_ref.update({"attempts": firestore.Increment(1)})
+        record_event(user_doc.id, "mfa_verification_failed")
+        raise HTTPException(status_code=401, detail="The authentication code is invalid.")
+
+    token = secrets.token_urlsafe(32)
+    session_ref = client.collection("sessions").document(digest(token))
+    recovery_codes = [
+        secrets.token_urlsafe(9).upper() for _ in range(10)
+    ] if purpose == "enroll" else []
+
+    @firestore.transactional
+    def consume_challenge(transaction):
+        latest_challenge = challenge_ref.get(transaction=transaction)
+        latest_user = user_ref.get(transaction=transaction)
+        if (
+            not latest_challenge.exists
+            or not latest_user.exists
+            or (latest_challenge.to_dict() or {}).get("expiresAt") <= utcnow()
+        ):
+            return False
+        latest_data = latest_challenge.to_dict() or {}
+        latest_user_data = latest_user.to_dict() or {}
+        if latest_data.get("purpose") != purpose:
+            return False
+        if is_recovery:
+            latest_recovery_hashes = latest_user_data.get("totpRecoveryHashes", [])
+            if recovery_digest not in latest_recovery_hashes:
+                return False
+            transaction.update(
+                user_ref,
+                {
+                    "totpRecoveryHashes": [
+                        value for value in latest_recovery_hashes
+                        if value != recovery_digest
+                    ]
+                },
+            )
+        if purpose == "enroll":
+            transaction.update(
+                user_ref,
+                {
+                    "totpEnabled": True,
+                    "totpSecret": challenge["encryptedSecret"],
+                    "totpRecoveryHashes": [digest(code) for code in recovery_codes],
+                    "totpEnrolledAt": utcnow(),
+                },
+            )
+        transaction.delete(challenge_ref)
+        transaction.create(
+            session_ref,
+            {
+                "uid": user_doc.id,
+                "createdAt": utcnow(),
+                "expiresAt": utcnow() + SESSION_TTL,
+            },
+        )
+        return True
+
+    if not consume_challenge(client.transaction()):
+        raise HTTPException(status_code=409, detail="MFA challenge was already used. Sign in again.")
+    record_event(user_doc.id, "mfa_enrolled" if purpose == "enroll" else "mfa_verified")
+    result: dict[str, Any] = {
         "status": "logged_in",
         "token": token,
-        "user": {"id": user_doc.id, "username": email, "role": user.get("role", "user")},
+        "user": {
+            "id": user_doc.id,
+            "username": user["email"],
+            "role": user.get("role", "user"),
+        },
     }
+    if recovery_codes:
+        result["recovery_codes"] = recovery_codes
+    return result
 
 
 @app.post("/v1/onboarding/answer")
@@ -476,8 +641,6 @@ def answer_onboarding(payload: OnboardingAnswerRequest) -> dict[str, Any]:
     client = database()
     token_hash = digest(payload.challenge_token)
     challenge_ref = client.collection("onboardingChallenges").document(token_hash)
-    token = secrets.token_urlsafe(32)
-    session_ref = client.collection("sessions").document(digest(token))
 
     @firestore.transactional
     def consume_challenge(transaction):
@@ -538,10 +701,6 @@ def answer_onboarding(payload: OnboardingAnswerRequest) -> dict[str, Any]:
                 "challengeWindowStartedAt": firestore.DELETE_FIELD,
             },
         )
-        transaction.create(
-            session_ref,
-            {"uid": user_doc.id, "createdAt": now, "expiresAt": now + SESSION_TTL},
-        )
         return {"uid": user_doc.id, "email": user["email"], "role": user.get("role", "user")}
 
     result = consume_challenge(client.transaction())
@@ -550,15 +709,13 @@ def answer_onboarding(payload: OnboardingAnswerRequest) -> dict[str, Any]:
             record_event(result["uid"], "challenge_failed")
         raise HTTPException(status_code=result["error"], detail=result["detail"])
     record_event(result["uid"], "challenge_passed")
-    return {
-        "status": "logged_in",
-        "token": token,
-        "user": {
-            "id": result["uid"],
-            "username": result["email"],
-            "role": result["role"],
+    return issue_mfa_challenge(
+        result["uid"],
+        {
+            "email": result["email"],
+            "totpEnabled": False,
         },
-    }
+    )
 
 
 @app.get("/v1/me")

@@ -7,6 +7,7 @@ import 'package:cryptoshield_ai/main.dart';
 class FakeCryptoShieldService implements CryptoShieldService {
   String? submittedChallengeToken;
   String? submittedOptionId;
+  String? submittedMfaCode;
   final Map<String, List<Map<String, dynamic>>> toolHistory = {};
 
   @override
@@ -28,12 +29,29 @@ class FakeCryptoShieldService implements CryptoShieldService {
     submittedChallengeToken = challengeToken;
     submittedOptionId = optionId;
     return {
+      'status': 'mfa_enrollment_required',
+      'challenge_token': 'm' * 43,
+      'secret': 'JBSWY3DPEHPK3PXP',
+      'provisioning_uri':
+          'otpauth://totp/CRYPTOSHIELD:candidate%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=CRYPTOSHIELD',
+    };
+  }
+
+  @override
+  Future<Map<String, dynamic>> verifyMfa(
+    String challengeToken,
+    String code,
+  ) async {
+    submittedMfaCode = code;
+    return {
       'status': 'logged_in',
+      'token': 'session-token',
       'user': {
         'id': 'candidate-uid',
         'username': 'candidate@example.com',
         'role': 'user',
       },
+      'recovery_codes': ['RECOVERY-ONE', 'RECOVERY-TWO'],
     };
   }
 
@@ -101,7 +119,7 @@ void main() {
     expect(find.text('Sign in'), findsOneWidget);
     expect(find.text('Demo analyst'), findsNothing);
 
-    await tester.tap(find.text('New here? Create an account'));
+    await tester.tap(find.text('Request an analyst account'));
     await tester.pumpAndSettle();
 
     expect(find.text('Create your account'), findsOneWidget);
@@ -115,7 +133,7 @@ void main() {
       CryptoShieldApp(service: FakeCryptoShieldService()),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('New here? Create an account'));
+    await tester.tap(find.text('Request an analyst account'));
     await tester.pumpAndSettle();
 
     await tester.enterText(
@@ -124,13 +142,11 @@ void main() {
     );
     await tester.enterText(find.byType(TextFormField).at(1), 'StrongPass123!');
     await tester.enterText(find.byType(TextFormField).at(2), 'StrongPass123!');
-    await tester.tap(find.text('Create account'));
+    await tester.tap(find.text('Request analyst access'));
     await tester.pumpAndSettle();
 
     expect(
-      find.text(
-        'Registration submitted. An administrator must approve your account before you can sign in. Email verification is not configured.',
-      ),
+      find.text('Account request submitted for administrator review.'),
       findsOneWidget,
     );
   });
@@ -161,14 +177,24 @@ void main() {
     expect(find.text('Security onboarding'), findsOneWidget);
     expect(authenticatedUser, isNull);
     await tester.tap(find.text('Deny it and report it.'));
-    await tester.ensureVisible(find.text('Submit answer'));
+    await tester.ensureVisible(find.text('Continue to authenticator setup'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Submit answer'));
+    await tester.tap(find.text('Continue to authenticator setup'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Set up your authenticator'), findsOneWidget);
+    await tester.enterText(find.byType(TextField), '123456');
+    await tester.tap(find.text('Verify and enable MFA'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Save your recovery codes'), findsOneWidget);
+    await tester.tap(find.text('I’ve saved these codes — continue'));
     await tester.pumpAndSettle();
 
     expect(authenticatedUser?['id'], 'candidate-uid');
     expect(service.submittedChallengeToken, 'x' * 43);
     expect(service.submittedOptionId, 'deny-prompt-001');
+    expect(service.submittedMfaCode, '123456');
   });
 
   testWidgets(

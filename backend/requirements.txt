@@ -3,3 +3,4 @@ uvicorn[standard]==0.34.0
 pydantic==2.10.4
 cryptography==44.0.1
 firebase-admin==6.6.0
+pyotp==2.9.0

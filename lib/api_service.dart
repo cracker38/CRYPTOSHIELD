@@ -22,6 +22,7 @@ abstract interface class CryptoShieldService {
     String challengeToken,
     String optionId,
   );
+  Future<Map<String, dynamic>> verifyMfa(String challengeToken, String code);
   Future<Map<String, dynamic>?> restoreUser();
   Future<void> logout();
   Future<List<Map<String, dynamic>>> getMessages(String email);
@@ -223,6 +224,22 @@ class ApiCryptoShieldService implements CryptoShieldService {
       body: {
         'challenge_token': challengeToken,
         'option_id': optionId,
+      },
+    );
+    return result;
+  }
+
+  @override
+  Future<Map<String, dynamic>> verifyMfa(
+    String challengeToken,
+    String code,
+  ) async {
+    final result = await _request(
+      'POST',
+      '/v1/mfa/verify',
+      body: {
+        'challenge_token': challengeToken,
+        'code': code,
       },
     );
     final token = result['token'];

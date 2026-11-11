@@ -1,6 +1,8 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import 'api_service.dart';
 
 Future<void> main() async {
@@ -116,7 +118,7 @@ class ApiErrorPage extends StatelessWidget {
                 const Icon(Icons.cloud_off_outlined,
                     size: 44, color: Colors.orange),
                 const SizedBox(height: 12),
-                const Text('Could not verify your Firebase account.'),
+                const Text('Could not verify your CRYPTOSHIELD session.'),
                 const SizedBox(height: 8),
                 Text(message, textAlign: TextAlign.center),
                 const SizedBox(height: 16),
@@ -147,43 +149,51 @@ class _AuthPageState extends State<AuthPage> {
   final email = TextEditingController();
   final password = TextEditingController();
   final confirmation = TextEditingController();
+  final mfaCode = TextEditingController();
   bool creatingAccount = false;
   bool busy = false;
   bool obscurePassword = true;
+  bool usingRecoveryCode = false;
   Map<String, dynamic>? challenge;
   String? challengeToken;
   String? selectedOption;
+  Map<String, dynamic>? mfaChallenge;
+  String? mfaChallengeToken;
+  List<String>? recoveryCodes;
+  Map<String, dynamic>? pendingUser;
 
   @override
   void dispose() {
     email.dispose();
     password.dispose();
     confirmation.dispose();
+    mfaCode.dispose();
     super.dispose();
   }
 
-  Future<void> submit() async {
-    if (challenge == null && !formKey.currentState!.validate()) return;
+  void showMfaStep(Map<String, dynamic> result) {
+    setState(() {
+      mfaChallenge = result;
+      mfaChallengeToken = result['challenge_token'] as String;
+      challenge = null;
+      challengeToken = null;
+      selectedOption = null;
+      mfaCode.clear();
+      usingRecoveryCode = false;
+    });
+  }
+
+  Future<void> submitAccount() async {
+    if (!formKey.currentState!.validate()) return;
     setState(() => busy = true);
     try {
-      if (challenge != null) {
-        final result = await widget.service.answerChallenge(
-          challengeToken!,
-          selectedOption!,
-        );
-        if (mounted) {
-          widget.onAuthenticated(result['user'] as Map<String, dynamic>);
-        }
-      } else if (creatingAccount) {
+      if (creatingAccount) {
         await widget.service.register(email.text.trim(), password.text);
         if (mounted) {
           setState(() => creatingAccount = false);
           password.clear();
           confirmation.clear();
-          showMessage(
-            context,
-            'Registration submitted. An administrator must approve your account before you can sign in. Email verification is not configured.',
-          );
+          showMessage(context, 'Account request submitted for administrator review.');
         }
       } else {
         final result =
@@ -198,6 +208,11 @@ class _AuthPageState extends State<AuthPage> {
           }
           return;
         }
+        if (result['status'] == 'mfa_required' ||
+            result['status'] == 'mfa_enrollment_required') {
+          if (mounted) showMfaStep(result);
+          return;
+        }
         if (mounted) {
           widget.onAuthenticated(result['user'] as Map<String, dynamic>);
         }
@@ -209,89 +224,238 @@ class _AuthPageState extends State<AuthPage> {
     }
   }
 
+  Future<void> submitKnowledgeCheck() async {
+    if (selectedOption == null) return;
+    setState(() => busy = true);
+    try {
+      final result = await widget.service.answerChallenge(
+        challengeToken!,
+        selectedOption!,
+      );
+      if (mounted) showMfaStep(result);
+    } on ApiException catch (error) {
+      if (mounted) showMessage(context, error.message);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> verifyMfa() async {
+    if (mfaCode.text.trim().isEmpty) {
+      showMessage(context, 'Enter your authenticator code or recovery code.');
+      return;
+    }
+    setState(() => busy = true);
+    try {
+      final result = await widget.service.verifyMfa(
+        mfaChallengeToken!,
+        mfaCode.text.trim(),
+      );
+      final codes = (result['recovery_codes'] as List<dynamic>?)
+          ?.map((code) => code as String)
+          .toList();
+      if (mounted && codes != null && codes.isNotEmpty) {
+        setState(() {
+          recoveryCodes = codes;
+          pendingUser = result['user'] as Map<String, dynamic>;
+        });
+      } else if (mounted) {
+        widget.onAuthenticated(result['user'] as Map<String, dynamic>);
+      }
+    } on ApiException catch (error) {
+      if (mounted) showMessage(context, error.message);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  void returnToSignIn() {
+    setState(() {
+      challenge = null;
+      challengeToken = null;
+      selectedOption = null;
+      mfaChallenge = null;
+      mfaChallengeToken = null;
+      recoveryCodes = null;
+      pendingUser = null;
+      mfaCode.clear();
+    });
+  }
+
   Widget buildChallenge() {
     final activeChallenge = challenge!;
     final options = activeChallenge['options'] as List<dynamic>;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const _AuthStepLabel('SECURITY ONBOARDING · 1 OF 2'),
+        const SizedBox(height: 16),
+        Text(
+          activeChallenge['question'] as String,
+          style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 12),
+        RadioGroup<String>(
+          groupValue: selectedOption,
+          onChanged: (value) {
+            if (!busy) setState(() => selectedOption = value);
+          },
+          child: Column(
+            children: options.map((item) {
+              final option = item as Map<String, dynamic>;
+              return RadioListTile<String>(
+                value: option['id'] as String,
+                title: Text(option['text'] as String),
+                enabled: !busy,
+                contentPadding: EdgeInsets.zero,
+              );
+            }).toList(),
+          ),
+        ),
+        const Text(
+          'This awareness check is separate from multi-factor authentication.',
+          style: TextStyle(color: Colors.white54, fontSize: 12),
+        ),
+        const SizedBox(height: 14),
+        _AuthPrimaryButton(
+          label: 'Continue to authenticator setup',
+          busy: busy,
+          onPressed: selectedOption == null ? null : submitKnowledgeCheck,
+        ),
+        TextButton(
+          onPressed: busy ? null : returnToSignIn,
+          child: const Text('Back to sign in'),
+        ),
+      ],
+    );
+  }
+
+  Widget buildMfaPage() {
+    final setup = mfaChallenge?['status'] == 'mfa_enrollment_required';
+    final uri = setup ? mfaChallenge!['provisioning_uri'] as String : null;
     return Scaffold(
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 520),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const _BrandMark(),
-                const SizedBox(height: 32),
-                const Text(
-                  'Security onboarding',
-                  style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800),
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Your verified account was approved. Complete this randomly selected defensive security scenario to activate it. This knowledge check is not identity verification or multi-factor authentication.',
-                  style: TextStyle(color: Colors.white60, height: 1.5),
-                ),
-                const SizedBox(height: 20),
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(18),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Text(
-                          activeChallenge['question'] as String,
-                          style: const TextStyle(
-                            fontSize: 17,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        RadioGroup<String>(
-                          groupValue: selectedOption,
-                          onChanged: (value) {
-                            if (!busy) setState(() => selectedOption = value);
-                          },
-                          child: Column(
-                            children: options.map((item) {
-                              final option = item as Map<String, dynamic>;
-                              return RadioListTile<String>(
-                                value: option['id'] as String,
-                                title: Text(option['text'] as String),
-                                enabled: !busy,
-                                contentPadding: EdgeInsets.zero,
-                              );
-                            }).toList(),
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        FilledButton(
-                          onPressed:
-                              busy || selectedOption == null ? null : submit,
-                          child: busy
-                              ? const SizedBox(
-                                  width: 20,
-                                  height: 20,
-                                  child:
-                                      CircularProgressIndicator(strokeWidth: 2),
-                                )
-                              : const Text('Submit answer'),
-                        ),
-                        TextButton(
-                          onPressed: busy
-                              ? null
-                              : () => setState(() {
-                                    challenge = null;
-                                    challengeToken = null;
-                                    selectedOption = null;
-                                  }),
-                          child: const Text('Back to sign in'),
-                        ),
-                      ],
+            constraints: const BoxConstraints(maxWidth: 480),
+            child: Card(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const _BrandMark(),
+                    const SizedBox(height: 28),
+                    _AuthStepLabel(
+                      setup ? 'REQUIRED AUTHENTICATOR ENROLLMENT' : 'MFA CHECK',
                     ),
-                  ),
+                    const SizedBox(height: 12),
+                    Text(
+                      setup ? 'Set up your authenticator' : 'Verify it’s you',
+                      style: const TextStyle(
+                        fontSize: 26,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      setup
+                          ? 'Scan the QR code with an authenticator app, then enter its current six-digit code. Access stays locked until setup is verified.'
+                          : 'Enter the current code from your authenticator app to continue.',
+                      style: const TextStyle(
+                        color: Colors.white60,
+                        height: 1.5,
+                      ),
+                    ),
+                    if (setup) ...[
+                      const SizedBox(height: 20),
+                      Center(
+                        child: Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: QrImageView(
+                            data: uri!,
+                            size: 190,
+                            backgroundColor: Colors.white,
+                            errorCorrectionLevel: QrErrorCorrectLevel.M,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        'Manual setup key',
+                        style: TextStyle(color: Colors.white54, fontSize: 12),
+                      ),
+                      const SizedBox(height: 5),
+                      SelectableText(
+                        mfaChallenge!['secret'] as String,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: mint,
+                          fontSize: 16,
+                          letterSpacing: 2,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 20),
+                    if (!usingRecoveryCode || setup)
+                      TextField(
+                        controller: mfaCode,
+                        keyboardType: TextInputType.number,
+                        autofillHints: const [AutofillHints.oneTimeCode],
+                        maxLength: 6,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(fontSize: 20, letterSpacing: 8),
+                        decoration: const InputDecoration(
+                          labelText: '6-digit authenticator code',
+                          counterText: '',
+                          prefixIcon: Icon(Icons.pin_outlined),
+                        ),
+                      ),
+                    const SizedBox(height: 12),
+                    if (!setup)
+                      TextButton(
+                        onPressed: busy
+                            ? null
+                            : () => setState(() {
+                                  usingRecoveryCode = !usingRecoveryCode;
+                                  mfaCode.clear();
+                                }),
+                        child: Text(
+                          usingRecoveryCode
+                              ? 'Use authenticator code'
+                              : 'Use a recovery code',
+                        ),
+                      ),
+                    _AuthPrimaryButton(
+                      label: setup ? 'Verify and enable MFA' : 'Verify and continue',
+                      busy: busy,
+                      onPressed: verifyMfa,
+                    ),
+                    if (usingRecoveryCode && !setup)
+                      TextField(
+                        controller: mfaCode,
+                        keyboardType: TextInputType.text,
+                        maxLength: 32,
+                        textAlign: TextAlign.center,
+                        decoration: const InputDecoration(
+                          labelText: 'One-time recovery code',
+                          counterText: '',
+                          prefixIcon: Icon(Icons.key_outlined),
+                        ),
+                      ),
+                    TextButton(
+                      onPressed: busy ? null : returnToSignIn,
+                      child: Text(setup ? 'Cancel setup' : 'Back to sign in'),
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
           ),
         ),
@@ -299,20 +463,106 @@ class _AuthPageState extends State<AuthPage> {
     );
   }
 
+  Widget buildRecoveryCodesPage() => Scaffold(
+        body: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 480),
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const _BrandMark(),
+                      const SizedBox(height: 28),
+                      const _AuthStepLabel('MFA ENABLED'),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Save your recovery codes',
+                        style: TextStyle(
+                          fontSize: 25,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Each code works once if you lose access to your authenticator. These codes will not be shown again.',
+                        style: TextStyle(color: Colors.white60, height: 1.5),
+                      ),
+                      const SizedBox(height: 18),
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0A1726),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: SelectableText(
+                          recoveryCodes!.join('\n'),
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            fontFamily: 'monospace',
+                            height: 1.8,
+                            color: mint,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      OutlinedButton.icon(
+                        onPressed: () async {
+                          await Clipboard.setData(
+                            ClipboardData(text: recoveryCodes!.join('\n')),
+                          );
+                          if (mounted) {
+                            showMessage(context, 'Recovery codes copied.');
+                          }
+                        },
+                        icon: const Icon(Icons.copy_outlined),
+                        label: const Text('Copy recovery codes'),
+                      ),
+                      const SizedBox(height: 12),
+                      _AuthPrimaryButton(
+                        label: 'I’ve saved these codes — continue',
+                        busy: busy,
+                        onPressed: () =>
+                            widget.onAuthenticated(pendingUser!),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
   @override
   Widget build(BuildContext context) {
+    if (recoveryCodes != null) return buildRecoveryCodesPage();
+    if (mfaChallenge != null) return buildMfaPage();
     if (challenge != null) return buildChallenge();
     return Scaffold(
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 460),
+      body: DecoratedBox(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF0A1A2B), navy, Color(0xFF08101C)],
+          ),
+        ),
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 480),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 const _BrandMark(),
-                const SizedBox(height: 32),
+                const SizedBox(height: 34),
+                const _AuthStepLabel('SECURE ANALYST ACCESS'),
+                const SizedBox(height: 12),
                 Text(
                   creatingAccount ? 'Create your account' : 'Welcome back',
                   style: const TextStyle(
@@ -323,9 +573,9 @@ class _AuthPageState extends State<AuthPage> {
                 const SizedBox(height: 8),
                 Text(
                   creatingAccount
-                      ? 'Start with your email and a strong password.'
-                      : 'Sign in to your security workspace.',
-                  style: const TextStyle(color: Colors.white60),
+                      ? 'Request access to the CRYPTOSHIELD analyst workspace.'
+                      : 'Sign in to your security operations workspace.',
+                  style: const TextStyle(color: Colors.white60, height: 1.5),
                 ),
                 const SizedBox(height: 24),
                 Card(
@@ -341,7 +591,7 @@ class _AuthPageState extends State<AuthPage> {
                             keyboardType: TextInputType.emailAddress,
                             autofillHints: const [AutofillHints.email],
                             decoration: const InputDecoration(
-                              labelText: 'Email address',
+                              labelText: 'Work email',
                               prefixIcon: Icon(Icons.alternate_email),
                             ),
                             validator: (value) {
@@ -397,7 +647,7 @@ class _AuthPageState extends State<AuthPage> {
                             ),
                             const SizedBox(height: 12),
                             const Text(
-                              'Use 12 or more characters. Your password is stored as a one-way hash.',
+                              'Use at least 12 characters. Avoid reusing a password from another account.',
                               style: TextStyle(
                                 color: Colors.white54,
                                 fontSize: 12,
@@ -407,7 +657,7 @@ class _AuthPageState extends State<AuthPage> {
                           ],
                           const SizedBox(height: 22),
                           FilledButton(
-                            onPressed: busy ? null : submit,
+                            onPressed: busy ? null : submitAccount,
                             child: Padding(
                               padding: const EdgeInsets.symmetric(vertical: 12),
                               child: busy
@@ -420,7 +670,7 @@ class _AuthPageState extends State<AuthPage> {
                                     )
                                   : Text(
                                       creatingAccount
-                                          ? 'Create account'
+                                          ? 'Request analyst access'
                                           : 'Sign in',
                                     ),
                             ),
@@ -434,7 +684,7 @@ class _AuthPageState extends State<AuthPage> {
                             child: Text(
                               creatingAccount
                                   ? 'Already have an account? Sign in'
-                                  : 'New here? Create an account',
+                                  : 'Request an analyst account',
                             ),
                           ),
                         ],
@@ -444,17 +694,66 @@ class _AuthPageState extends State<AuthPage> {
                 ),
                 const SizedBox(height: 12),
                 const Text(
-                  'Connects securely to the CRYPTOSHIELD API and Firestore.',
+                  'New accounts require administrator approval, security onboarding, and MFA enrollment.',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.white38, fontSize: 12),
+                  style: TextStyle(
+                    color: Colors.white38,
+                    fontSize: 11,
+                    height: 1.5,
+                  ),
                 ),
               ],
             ),
           ),
         ),
       ),
+      ),
     );
   }
+}
+
+class _AuthStepLabel extends StatelessWidget {
+  const _AuthStepLabel(this.label);
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Text(
+        label,
+        style: const TextStyle(
+          color: mint,
+          fontSize: 10,
+          letterSpacing: 1.4,
+          fontWeight: FontWeight.w800,
+        ),
+      );
+}
+
+class _AuthPrimaryButton extends StatelessWidget {
+  const _AuthPrimaryButton({
+    required this.label,
+    required this.busy,
+    required this.onPressed,
+  });
+
+  final String label;
+  final bool busy;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) => FilledButton(
+        onPressed: busy ? null : onPressed,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: busy
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : Text(label),
+        ),
+      );
 }
 
 class MainShell extends StatefulWidget {
