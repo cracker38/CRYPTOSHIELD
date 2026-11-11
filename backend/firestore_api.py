@@ -175,10 +175,14 @@ def enforce_rate_limit(
         return True
 
     if not consume(database().transaction()):
+        retry_after = max(
+            1,
+            int(window_start + window_seconds - now.timestamp()),
+        )
         raise HTTPException(
             status_code=429,
             detail="Too many requests. Please wait before trying again.",
-            headers={"Retry-After": str(window_seconds)},
+            headers={"Retry-After": str(retry_after)},
         )
 
 
@@ -251,7 +255,6 @@ def _deliver_action_email(email: str, subject: str, token: str, action: str) -> 
 
 def _issue_action_token(
     user_id: str,
-    email: str,
     *,
     collection_name: str,
     user_field: str,
@@ -599,7 +602,6 @@ def register_user(payload: RegisterRequest, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="This email is already registered.")
     token = _issue_action_token(
         user_id,
-        email,
         collection_name="emailVerificationChallenges",
         user_field="emailVerificationTokenHash",
     )
@@ -641,7 +643,8 @@ def verify_email(payload: EmailTokenRequest, request: Request) -> dict[str, str]
         user_snapshot = user_ref.get(transaction=transaction)
         if (
             not user_snapshot.exists
-            or data.get("expiresAt") <= utcnow()
+            or not data.get("expiresAt")
+            or data["expiresAt"] <= utcnow()
             or (user_snapshot.to_dict() or {}).get("emailVerificationTokenHash")
             != challenge_ref.id
         ):
@@ -688,7 +691,6 @@ def resend_email_verification(
             if user and user.get("emailVerified") is not True:
                 token = _issue_action_token(
                     user_id,
-                    email,
                     collection_name="emailVerificationChallenges",
                     user_field="emailVerificationTokenHash",
                 )
@@ -843,7 +845,6 @@ def request_password_reset(
             if user and user.get("emailVerified") is True:
                 token = _issue_action_token(
                     user_id,
-                    email,
                     collection_name="passwordResetChallenges",
                     user_field="passwordResetTokenHash",
                 )
@@ -884,7 +885,8 @@ def confirm_password_reset(
         user_snapshot = user_ref.get(transaction=transaction)
         if (
             not user_snapshot.exists
-            or data.get("expiresAt") <= utcnow()
+            or not data.get("expiresAt")
+            or data["expiresAt"] <= utcnow()
             or (user_snapshot.to_dict() or {}).get("passwordResetTokenHash")
             != challenge_ref.id
         ):
@@ -1159,6 +1161,7 @@ def admin_overview(admin: dict[str, Any] = Depends(require_admin)) -> dict[str, 
                 "role": doc.get("role", "user"),
                 "is_active": doc.get("isActive", False),
                 "account_status": doc.get("accountStatus", "pending_review"),
+                "email_verified": doc.get("emailVerified") is True,
                 "created_at": _iso(doc.get("createdAt")),
             }
             for doc in sorted(users, key=lambda item: item.get("createdAt") or utcnow(), reverse=True)
@@ -1184,6 +1187,11 @@ def review_user(
     if user.get("role") == "admin":
         raise HTTPException(status_code=400, detail="Administrator accounts cannot use applicant review.")
     status = user.get("accountStatus")
+    if payload.decision == "approve" and user.get("emailVerified") is not True:
+        raise HTTPException(
+            status_code=409,
+            detail="Applicants must verify their email before approval.",
+        )
     allowed = {"pending_review"} if payload.decision == "approve" else {"pending_review", "challenge_required"}
     if status not in allowed:
         raise HTTPException(status_code=409, detail="This account cannot be changed through applicant review.")
@@ -1221,6 +1229,11 @@ def set_user_status(
         raise HTTPException(status_code=404, detail="User was not found.")
     target = target_doc.to_dict() or {}
     status = target.get("accountStatus")
+    if payload.is_active and target.get("emailVerified") is not True:
+        raise HTTPException(
+            status_code=409,
+            detail="This account must verify its email before activation.",
+        )
     if payload.is_active and status not in {"disabled", "active"}:
         raise HTTPException(status_code=409, detail="Pending or rejected accounts must complete administrator review and onboarding.")
     if not payload.is_active and status not in {"active", "disabled"}:

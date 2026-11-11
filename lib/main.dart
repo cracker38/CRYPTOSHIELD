@@ -150,7 +150,13 @@ class _AuthPageState extends State<AuthPage> {
   final password = TextEditingController();
   final confirmation = TextEditingController();
   final mfaCode = TextEditingController();
+  final emailActionToken = TextEditingController();
+  final newPassword = TextEditingController();
+  final newPasswordConfirmation = TextEditingController();
   bool creatingAccount = false;
+  bool verifyingEmail = false;
+  bool resettingPassword = false;
+  bool passwordResetTokenSent = false;
   bool busy = false;
   bool obscurePassword = true;
   bool usingRecoveryCode = false;
@@ -168,6 +174,9 @@ class _AuthPageState extends State<AuthPage> {
     password.dispose();
     confirmation.dispose();
     mfaCode.dispose();
+    emailActionToken.dispose();
+    newPassword.dispose();
+    newPasswordConfirmation.dispose();
     super.dispose();
   }
 
@@ -190,10 +199,13 @@ class _AuthPageState extends State<AuthPage> {
       if (creatingAccount) {
         await widget.service.register(email.text.trim(), password.text);
         if (mounted) {
-          setState(() => creatingAccount = false);
+          setState(() {
+            creatingAccount = false;
+            verifyingEmail = true;
+            emailActionToken.clear();
+          });
           password.clear();
           confirmation.clear();
-          showMessage(context, 'Account request submitted for administrator review.');
         }
       } else {
         final result =
@@ -216,6 +228,106 @@ class _AuthPageState extends State<AuthPage> {
         if (mounted) {
           widget.onAuthenticated(result['user'] as Map<String, dynamic>);
         }
+      }
+    } on ApiException catch (error) {
+      if (mounted) showMessage(context, error.message);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> verifyEmail() async {
+    if (emailActionToken.text.trim().isEmpty) {
+      showMessage(context, 'Enter the verification code from your email.');
+      return;
+    }
+    setState(() => busy = true);
+    try {
+      await widget.service.verifyEmail(emailActionToken.text.trim());
+      if (mounted) {
+        setState(() {
+          verifyingEmail = false;
+          emailActionToken.clear();
+        });
+        showMessage(
+            context, 'Email verified. Your account is awaiting review.');
+      }
+    } on ApiException catch (error) {
+      if (mounted) showMessage(context, error.message);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> resendVerificationEmail() async {
+    if (email.text.trim().isEmpty) {
+      showMessage(context, 'Enter your email address first.');
+      return;
+    }
+    setState(() => busy = true);
+    try {
+      await widget.service.resendEmailVerification(email.text.trim());
+      if (mounted)
+        showMessage(context,
+            'If your account needs verification, a new email has been sent.');
+    } on ApiException catch (error) {
+      if (mounted) showMessage(context, error.message);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> requestPasswordReset() async {
+    if (email.text.trim().isEmpty) {
+      showMessage(context, 'Enter your email address first.');
+      return;
+    }
+    setState(() => busy = true);
+    try {
+      await widget.service.requestPasswordReset(email.text.trim());
+      if (mounted) {
+        setState(() {
+          passwordResetTokenSent = true;
+          emailActionToken.clear();
+        });
+        showMessage(
+          context,
+          'If a verified account exists, a reset code has been emailed.',
+        );
+      }
+    } on ApiException catch (error) {
+      if (mounted) showMessage(context, error.message);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> confirmPasswordReset() async {
+    if (emailActionToken.text.trim().isEmpty ||
+        newPassword.text.length < 12 ||
+        newPassword.text != newPasswordConfirmation.text) {
+      showMessage(
+        context,
+        'Enter the reset code and matching passwords of at least 12 characters.',
+      );
+      return;
+    }
+    setState(() => busy = true);
+    try {
+      await widget.service.confirmPasswordReset(
+        emailActionToken.text.trim(),
+        newPassword.text,
+      );
+      if (mounted) {
+        setState(() {
+          resettingPassword = false;
+          passwordResetTokenSent = false;
+          emailActionToken.clear();
+          newPassword.clear();
+          newPasswordConfirmation.clear();
+        });
+        showMessage(
+            context, 'Password updated. Sign in with your new password.');
       }
     } on ApiException catch (error) {
       if (mounted) showMessage(context, error.message);
@@ -278,9 +390,175 @@ class _AuthPageState extends State<AuthPage> {
       mfaChallengeToken = null;
       recoveryCodes = null;
       pendingUser = null;
+      verifyingEmail = false;
+      resettingPassword = false;
+      passwordResetTokenSent = false;
+      emailActionToken.clear();
+      newPassword.clear();
+      newPasswordConfirmation.clear();
       mfaCode.clear();
     });
   }
+
+  Widget buildActionPage({
+    required String title,
+    required String description,
+    required List<Widget> children,
+  }) =>
+      Scaffold(
+        body: DecoratedBox(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFF0A1A2B), navy, Color(0xFF08101C)],
+            ),
+          ),
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 480),
+                child: Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const _BrandMark(),
+                        const SizedBox(height: 22),
+                        Text(
+                          title,
+                          style: const TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          description,
+                          style: const TextStyle(
+                            color: Colors.white60,
+                            height: 1.5,
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+                        ...children,
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+  Widget buildEmailVerificationPage() => buildActionPage(
+        title: 'Verify your email',
+        description:
+            'Enter the verification code sent to ${email.text.trim()}. Your account still requires administrator approval.',
+        children: [
+          TextField(
+            controller: emailActionToken,
+            keyboardType: TextInputType.visiblePassword,
+            maxLength: 128,
+            decoration: const InputDecoration(
+              labelText: 'Email verification code',
+              counterText: '',
+              prefixIcon: Icon(Icons.mark_email_read_outlined),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _AuthPrimaryButton(
+            label: 'Verify email',
+            busy: busy,
+            onPressed: verifyEmail,
+          ),
+          TextButton(
+            onPressed: busy ? null : resendVerificationEmail,
+            child: const Text('Resend verification email'),
+          ),
+          TextButton(
+            onPressed: busy ? null : returnToSignIn,
+            child: const Text('Back to sign in'),
+          ),
+        ],
+      );
+
+  Widget buildPasswordResetPage() => buildActionPage(
+        title:
+            passwordResetTokenSent ? 'Choose a new password' : 'Reset password',
+        description: passwordResetTokenSent
+            ? 'Enter the reset code from your email and choose a new password.'
+            : 'We will email a reset code if this address belongs to a verified account.',
+        children: [
+          if (!passwordResetTokenSent) ...[
+            TextField(
+              controller: email,
+              keyboardType: TextInputType.emailAddress,
+              autofillHints: const [AutofillHints.email],
+              decoration: const InputDecoration(
+                labelText: 'Email address',
+                prefixIcon: Icon(Icons.alternate_email),
+              ),
+            ),
+            const SizedBox(height: 12),
+            _AuthPrimaryButton(
+              label: 'Send reset code',
+              busy: busy,
+              onPressed: requestPasswordReset,
+            ),
+          ] else ...[
+            TextField(
+              controller: emailActionToken,
+              maxLength: 128,
+              decoration: const InputDecoration(
+                labelText: 'Password reset code',
+                counterText: '',
+                prefixIcon: Icon(Icons.key_outlined),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: newPassword,
+              obscureText: true,
+              maxLength: 128,
+              autofillHints: const [AutofillHints.newPassword],
+              decoration: const InputDecoration(
+                labelText: 'New password (at least 12 characters)',
+                prefixIcon: Icon(Icons.lock_outline),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: newPasswordConfirmation,
+              obscureText: true,
+              maxLength: 128,
+              decoration: const InputDecoration(
+                labelText: 'Confirm new password',
+                prefixIcon: Icon(Icons.verified_user_outlined),
+              ),
+            ),
+            const SizedBox(height: 12),
+            _AuthPrimaryButton(
+              label: 'Update password',
+              busy: busy,
+              onPressed: confirmPasswordReset,
+            ),
+          ],
+          TextButton(
+            onPressed: busy
+                ? null
+                : () => setState(() {
+                      resettingPassword = false;
+                      passwordResetTokenSent = false;
+                      emailActionToken.clear();
+                    }),
+            child: const Text('Back to sign in'),
+          ),
+        ],
+      );
 
   Widget buildChallenge() {
     final activeChallenge = challenge!;
@@ -345,8 +623,9 @@ class _AuthPageState extends State<AuthPage> {
                       _AuthPrimaryButton(
                         label: 'Continue to authenticator setup',
                         busy: busy,
-                        onPressed:
-                            selectedOption == null ? null : submitKnowledgeCheck,
+                        onPressed: selectedOption == null
+                            ? null
+                            : submitKnowledgeCheck,
                       ),
                       TextButton(
                         onPressed: busy ? null : returnToSignIn,
@@ -466,7 +745,9 @@ class _AuthPageState extends State<AuthPage> {
                         ),
                       ),
                     _AuthPrimaryButton(
-                      label: setup ? 'Verify and enable MFA' : 'Verify and continue',
+                      label: setup
+                          ? 'Verify and enable MFA'
+                          : 'Verify and continue',
                       busy: busy,
                       onPressed: verifyMfa,
                     ),
@@ -558,8 +839,7 @@ class _AuthPageState extends State<AuthPage> {
                       _AuthPrimaryButton(
                         label: 'I’ve saved these codes — continue',
                         busy: busy,
-                        onPressed: () =>
-                            widget.onAuthenticated(pendingUser!),
+                        onPressed: () => widget.onAuthenticated(pendingUser!),
                       ),
                     ],
                   ),
@@ -575,6 +855,8 @@ class _AuthPageState extends State<AuthPage> {
     if (recoveryCodes != null) return buildRecoveryCodesPage();
     if (mfaChallenge != null) return buildMfaPage();
     if (challenge != null) return buildChallenge();
+    if (verifyingEmail) return buildEmailVerificationPage();
+    if (resettingPassword) return buildPasswordResetPage();
     return Scaffold(
       body: DecoratedBox(
         decoration: const BoxDecoration(
@@ -619,127 +901,151 @@ class _AuthPageState extends State<AuthPage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                          TextFormField(
-                            controller: email,
-                            keyboardType: TextInputType.emailAddress,
-                            autofillHints: const [AutofillHints.email],
-                            decoration: const InputDecoration(
-                              labelText: 'Work email',
-                              prefixIcon: Icon(Icons.alternate_email),
-                            ),
-                            validator: (value) {
-                              final trimmed = value?.trim() ?? '';
-                              return RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
-                                      .hasMatch(trimmed)
-                                  ? null
-                                  : 'Enter a valid email address.';
-                            },
-                          ),
-                          const SizedBox(height: 14),
-                          TextFormField(
-                            controller: password,
-                            obscureText: obscurePassword,
-                            autofillHints: creatingAccount
-                                ? const [AutofillHints.newPassword]
-                                : const [AutofillHints.password],
-                            decoration: InputDecoration(
-                              labelText: 'Password',
-                              prefixIcon: const Icon(Icons.lock_outline),
-                              suffixIcon: IconButton(
-                                onPressed: () => setState(
-                                  () => obscurePassword = !obscurePassword,
-                                ),
-                                icon: Icon(
-                                  obscurePassword
-                                      ? Icons.visibility_outlined
-                                      : Icons.visibility_off_outlined,
-                                ),
+                            TextFormField(
+                              controller: email,
+                              keyboardType: TextInputType.emailAddress,
+                              autofillHints: const [AutofillHints.email],
+                              decoration: const InputDecoration(
+                                labelText: 'Work email',
+                                prefixIcon: Icon(Icons.alternate_email),
                               ),
+                              validator: (value) {
+                                final trimmed = value?.trim() ?? '';
+                                return RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+                                        .hasMatch(trimmed)
+                                    ? null
+                                    : 'Enter a valid email address.';
+                              },
                             ),
-                            validator: (value) {
-                              final length = value?.length ?? 0;
-                              if (creatingAccount && length < 12) {
-                                return 'Use at least 12 characters.';
-                              }
-                              if (length == 0) return 'Enter your password.';
-                              return null;
-                            },
-                          ),
-                          if (creatingAccount) ...[
                             const SizedBox(height: 14),
                             TextFormField(
-                              controller: confirmation,
+                              controller: password,
                               obscureText: obscurePassword,
-                              decoration: const InputDecoration(
-                                labelText: 'Confirm password',
-                                prefixIcon: Icon(Icons.verified_user_outlined),
+                              autofillHints: creatingAccount
+                                  ? const [AutofillHints.newPassword]
+                                  : const [AutofillHints.password],
+                              decoration: InputDecoration(
+                                labelText: 'Password',
+                                prefixIcon: const Icon(Icons.lock_outline),
+                                suffixIcon: IconButton(
+                                  onPressed: () => setState(
+                                    () => obscurePassword = !obscurePassword,
+                                  ),
+                                  icon: Icon(
+                                    obscurePassword
+                                        ? Icons.visibility_outlined
+                                        : Icons.visibility_off_outlined,
+                                  ),
+                                ),
                               ),
-                              validator: (value) => value == password.text
-                                  ? null
-                                  : 'Passwords do not match.',
+                              validator: (value) {
+                                final length = value?.length ?? 0;
+                                if (creatingAccount && length < 12) {
+                                  return 'Use at least 12 characters.';
+                                }
+                                if (length == 0) return 'Enter your password.';
+                                return null;
+                              },
                             ),
-                            const SizedBox(height: 12),
-                            const Text(
-                              'Use at least 12 characters. Avoid reusing a password from another account.',
-                              style: TextStyle(
-                                color: Colors.white54,
-                                fontSize: 12,
-                                height: 1.4,
+                            if (creatingAccount) ...[
+                              const SizedBox(height: 14),
+                              TextFormField(
+                                controller: confirmation,
+                                obscureText: obscurePassword,
+                                decoration: const InputDecoration(
+                                  labelText: 'Confirm password',
+                                  prefixIcon:
+                                      Icon(Icons.verified_user_outlined),
+                                ),
+                                validator: (value) => value == password.text
+                                    ? null
+                                    : 'Passwords do not match.',
                               ),
-                            ),
-                          ],
-                          const SizedBox(height: 22),
-                          FilledButton(
-                            onPressed: busy ? null : submitAccount,
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                              child: busy
-                                  ? const SizedBox(
-                                      height: 20,
-                                      width: 20,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
+                              const SizedBox(height: 12),
+                              const Text(
+                                'Use at least 12 characters. Avoid reusing a password from another account.',
+                                style: TextStyle(
+                                  color: Colors.white54,
+                                  fontSize: 12,
+                                  height: 1.4,
+                                ),
+                              ),
+                            ],
+                            const SizedBox(height: 22),
+                            FilledButton(
+                              onPressed: busy ? null : submitAccount,
+                              child: Padding(
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 12),
+                                child: busy
+                                    ? const SizedBox(
+                                        height: 20,
+                                        width: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : Text(
+                                        creatingAccount
+                                            ? 'Request analyst access'
+                                            : 'Sign in',
                                       ),
-                                    )
-                                  : Text(
-                                      creatingAccount
-                                          ? 'Request analyst access'
-                                          : 'Sign in',
-                                    ),
+                              ),
                             ),
-                          ),
-                          TextButton(
-                            onPressed: busy
-                                ? null
-                                : () => setState(
-                                      () => creatingAccount = !creatingAccount,
-                                    ),
-                            child: Text(
-                              creatingAccount
-                                  ? 'Already have an account? Sign in'
-                                  : 'Request an analyst account',
+                            TextButton(
+                              onPressed: busy
+                                  ? null
+                                  : () => setState(
+                                        () =>
+                                            creatingAccount = !creatingAccount,
+                                      ),
+                              child: Text(
+                                creatingAccount
+                                    ? 'Already have an account? Sign in'
+                                    : 'Request an analyst account',
+                              ),
                             ),
-                          ),
-                        ],
+                            if (!creatingAccount) ...[
+                              TextButton(
+                                onPressed: busy
+                                    ? null
+                                    : () => setState(() {
+                                          verifyingEmail = true;
+                                          emailActionToken.clear();
+                                        }),
+                                child: const Text('Verify email address'),
+                              ),
+                              TextButton(
+                                onPressed: busy
+                                    ? null
+                                    : () => setState(() {
+                                          resettingPassword = true;
+                                          passwordResetTokenSent = false;
+                                          emailActionToken.clear();
+                                        }),
+                                child: const Text('Forgot password?'),
+                              ),
+                            ],
+                          ],
+                        ),
                       ),
                     ),
                   ),
-                ),
-                const SizedBox(height: 12),
-                const Text(
-                  'New accounts require administrator approval, security onboarding, and MFA enrollment.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.white38,
-                    fontSize: 11,
-                    height: 1.5,
+                  const SizedBox(height: 12),
+                  const Text(
+                    'New accounts require administrator approval, security onboarding, and MFA enrollment.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.white38,
+                      fontSize: 11,
+                      height: 1.5,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
-      ),
       ),
     );
   }
@@ -1395,6 +1701,7 @@ class _AdminPageState extends State<AdminPage> {
             final isSelf = user['id'] == widget.currentUser['id'];
             final active = user['is_active'] as bool;
             final accountStatus = user['account_status'] as String;
+            final emailVerified = user['email_verified'] == true;
             return Card(
               child: ListTile(
                 leading: CircleAvatar(
@@ -1409,7 +1716,7 @@ class _AdminPageState extends State<AdminPage> {
                 ),
                 title: Text(user['username'] as String),
                 subtitle: Text(
-                  '${user['role']} · ${accountStatus.replaceAll('_', ' ')}',
+                  '${user['role']} · ${accountStatus.replaceAll('_', ' ')} · ${emailVerified ? 'email verified' : 'email unverified'}',
                 ),
                 trailing: isSelf
                     ? const Text('You', style: TextStyle(color: mint))
@@ -1418,8 +1725,10 @@ class _AdminPageState extends State<AdminPage> {
                             spacing: 2,
                             children: [
                               IconButton(
-                                tooltip: 'Approve applicant',
-                                onPressed: loading
+                                tooltip: emailVerified
+                                    ? 'Approve applicant'
+                                    : 'Applicant must verify email first',
+                                onPressed: loading || !emailVerified
                                     ? null
                                     : () => reviewUser(user, 'approve'),
                                 icon: const Icon(

@@ -314,8 +314,7 @@ class ApiCryptoShieldService implements CryptoShieldService {
   }
 
   @override
-  Future<List<Map<String, dynamic>>> getMessages(String email) =>
-      _requestList(
+  Future<List<Map<String, dynamic>>> getMessages(String email) => _requestList(
         '/v1/messages',
         query: {'with': email.trim()},
         authenticated: true,

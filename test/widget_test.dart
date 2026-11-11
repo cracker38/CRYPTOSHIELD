@@ -8,6 +8,8 @@ class FakeCryptoShieldService implements CryptoShieldService {
   String? submittedChallengeToken;
   String? submittedOptionId;
   String? submittedMfaCode;
+  String? verifiedEmailToken;
+  String? submittedResetToken;
   final Map<String, List<Map<String, dynamic>>> toolHistory = {};
 
   @override
@@ -57,6 +59,22 @@ class FakeCryptoShieldService implements CryptoShieldService {
 
   @override
   Future<void> checkHealth() async {}
+
+  @override
+  Future<void> verifyEmail(String token) async {
+    verifiedEmailToken = token;
+  }
+
+  @override
+  Future<void> resendEmailVerification(String email) async {}
+
+  @override
+  Future<void> requestPasswordReset(String email) async {}
+
+  @override
+  Future<void> confirmPasswordReset(String token, String newPassword) async {
+    submittedResetToken = token;
+  }
 
   @override
   Future<List<Map<String, dynamic>>> getMessages(String email) async => [];
@@ -126,7 +144,7 @@ void main() {
     expect(find.text('Confirm password'), findsOneWidget);
   });
 
-  testWidgets('registration explains administrator approval without email', (
+  testWidgets('registration requires email verification before review', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -145,10 +163,45 @@ void main() {
     await tester.tap(find.text('Request analyst access'));
     await tester.pumpAndSettle();
 
+    expect(find.text('Verify your email'), findsOneWidget);
+    await tester.enterText(
+      find.byType(TextField).first,
+      'v' * 43,
+    );
+    await tester.tap(find.text('Verify email'));
+    await tester.pumpAndSettle();
+    expect(service.verifiedEmailToken, 'v' * 43);
     expect(
-      find.text('Account request submitted for administrator review.'),
+      find.text('Email verified. Your account is awaiting review.'),
       findsOneWidget,
     );
+  });
+
+  testWidgets('password reset collects the emailed code and a new password', (
+    tester,
+  ) async {
+    final service = FakeCryptoShieldService();
+    await tester.pumpWidget(CryptoShieldApp(service: service));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Forgot password?'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byType(TextField).first,
+      'candidate@example.com',
+    );
+    await tester.tap(find.text('Send reset code'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Choose a new password'), findsOneWidget);
+    await tester.enterText(find.byType(TextField).at(0), 'r' * 43);
+    await tester.enterText(find.byType(TextField).at(1), 'NewStrongPass123!');
+    await tester.enterText(find.byType(TextField).at(2), 'NewStrongPass123!');
+    await tester.tap(find.text('Update password'));
+    await tester.pumpAndSettle();
+
+    expect(service.submittedResetToken, 'r' * 43);
+    expect(find.text('Welcome back'), findsOneWidget);
   });
 
   testWidgets('approved applicant must pass the challenge before sign-in', (
